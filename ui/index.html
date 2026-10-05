@@ -15,7 +15,8 @@
        ============================================================ -->
   <header class="menubar">
     <div class="menubar-left">
-      <div class="brand">
+      <button class="brand-btn" id="brand-btn" type="button"
+              aria-haspopup="true" title="Меню SIamba OS">
         <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
           <defs>
             <linearGradient id="logoGrad" x1="0" y1="0" x2="1" y2="1">
@@ -29,14 +30,8 @@
                 font-size="12" font-weight="700" fill="#0a0a14"
                 font-family="system-ui, sans-serif">S</text>
         </svg>
-        <span>SIamba OS</span>
-      </div>
-
-      <nav class="menu">
-        <button type="button" data-action="system">Система</button>
-        <button type="button" data-action="reboot">Перезагрузка</button>
-        <button type="button" data-action="shutdown">Выключение</button>
-      </nav>
+      </button>
+      <span class="active-app-name" id="active-app-name">SIamba OS</span>
     </div>
 
     <div class="menubar-center">
@@ -45,7 +40,7 @@
     </div>
 
     <div class="menubar-right">
-      <div class="indicator" title="Wi-Fi">
+      <button class="indicator" id="wifi-btn" type="button" title="Wi-Fi" aria-haspopup="true">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
           <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
@@ -53,9 +48,9 @@
           <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
           <circle cx="12" cy="20" r="0.9" fill="currentColor" stroke="none"/>
         </svg>
-      </div>
+      </button>
 
-      <div class="indicator" title="Звук">
+      <button class="indicator" id="vol-btn" type="button" title="Звук" aria-haspopup="true">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round">
@@ -63,7 +58,7 @@
           <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
           <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
         </svg>
-      </div>
+      </button>
 
       <div class="indicator" title="Батарея">
         <svg width="26" height="13" viewBox="0 0 28 14" aria-hidden="true">
@@ -80,12 +75,61 @@
   </header>
 
   <!-- ============================================================
+       POPOVERS (fixed, вне backdrop-filter контекста menubar)
+       ============================================================ -->
+  <div class="popover" id="brand-menu" hidden>
+    <div class="popover-title">SIamba OS</div>
+    <div class="sep"></div>
+    <button class="menu-item" data-action="settings" type="button">Система…</button>
+    <button class="menu-item" data-action="about"    type="button">О системе</button>
+    <div class="sep"></div>
+    <button class="menu-item" data-action="reboot"   type="button">Перезагрузить…</button>
+    <button class="menu-item danger" data-action="shutdown" type="button">Выключить…</button>
+  </div>
+
+  <div class="popover" id="wifi-popover" hidden>
+    <div class="popover-header">
+      <span>Wi-Fi</span>
+      <label class="switch">
+        <input type="checkbox" id="wifi-toggle">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+      </label>
+    </div>
+    <div class="popover-sub" id="wifi-status">—</div>
+    <div class="sep"></div>
+    <div class="wifi-list" id="wifi-list"></div>
+  </div>
+
+  <div class="popover" id="vol-popover" hidden>
+    <div class="popover-header"><span>Звук</span></div>
+    <div class="volume-row">
+      <button class="icon-btn" id="mute-btn" type="button" title="Mute" data-muted="false">
+  <svg class="icon-vol-on" width="20" height="20" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" stroke-width="1.8"
+       stroke-linecap="round" stroke-linejoin="round">
+    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+    <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+    <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+  </svg>
+  <svg class="icon-vol-off" width="20" height="20" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" stroke-width="1.8"
+       stroke-linecap="round" stroke-linejoin="round">
+    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+    <line x1="22" y1="9" x2="16" y2="15"/>
+    <line x1="16" y1="9" x2="22" y2="15"/>
+  </svg>
+</button>
+      <input type="range" id="volume-slider" min="0" max="100" step="1" value="50">
+      <span class="volume-label" id="volume-label">50%</span>
+    </div>
+  </div>
+
+  <!-- ============================================================
        DOCK
        ============================================================ -->
   <div class="dock" id="dock">
 
-    <!-- Finder -->
-    <div class="dock-item" data-running="true" data-app="xed" title="Finder">
+    <div class="dock-item" data-running="false" data-app="xed" data-name="Text Editor" title="Текстовый редактор">
       <div class="dock-icon" style="background: linear-gradient(180deg, #4fa8f0, #1a5fc4);">
         <svg viewBox="0 0 100 100" fill="none">
           <ellipse cx="35" cy="42" rx="4" ry="9" fill="#fff"/>
@@ -97,8 +141,7 @@
       <span class="dot"></span>
     </div>
 
-    <!-- Terminal -->
-    <div class="dock-item" data-running="true" data-app="gnome-terminal" title="Терминал">
+    <div class="dock-item" data-running="false" data-app="gnome-terminal" data-name="Terminal" title="Терминал">
       <div class="dock-icon" style="background: linear-gradient(180deg, #2b2b33, #101015);">
         <svg viewBox="0 0 24 24" fill="none" stroke="#7ee787"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -109,8 +152,7 @@
       <span class="dot"></span>
     </div>
 
-    <!-- Browser -->
-    <div class="dock-item" data-running="true" data-app="firefox" title="Браузер">
+    <div class="dock-item" data-running="false" data-app="firefox" data-name="Firefox" title="Браузер">
       <div class="dock-icon" style="background: linear-gradient(180deg, #58c4ff, #1a7fd4);">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -122,8 +164,7 @@
       <span class="dot"></span>
     </div>
 
-    <!-- Mail -->
-    <div class="dock-item" data-running="true" data-app="thunderbird" title="Почта">
+    <div class="dock-item" data-running="false" data-app="thunderbird" data-name="Thunderbird" title="Почта">
       <div class="dock-icon" style="background: linear-gradient(180deg, #5ec8ff, #1a7fd4);">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -134,8 +175,7 @@
       <span class="dot"></span>
     </div>
 
-    <!-- Music -->
-    <div class="dock-item" data-app="rhythmbox" title="Музыка">
+    <div class="dock-item" data-running="false" data-app="rhythmbox" data-name="Rhythmbox" title="Музыка">
       <div class="dock-icon" style="background: linear-gradient(180deg, #ff5e8a, #c11a55);">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -147,8 +187,7 @@
       <span class="dot"></span>
     </div>
 
-    <!-- Photos -->
-    <div class="dock-item" data-app="eog" title="Фото">
+    <div class="dock-item" data-running="false" data-app="eog" data-name="Image Viewer" title="Фото">
       <div class="dock-icon" style="background: linear-gradient(135deg, #ffb84d 0%, #ff5e8a 50%, #a855f7 100%);">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -160,8 +199,7 @@
       <span class="dot"></span>
     </div>
 
-    <!-- Calendar -->
-    <div class="dock-item" data-app="gnome-calendar" title="Календарь">
+    <div class="dock-item" data-running="false" data-app="gnome-calendar" data-name="Calendar" title="Календарь">
       <div class="dock-icon" style="background: #ffffff;">
         <svg viewBox="0 0 24 24" fill="none" stroke="#e11d48"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -174,8 +212,7 @@
       <span class="dot"></span>
     </div>
 
-    <!-- Settings -->
-    <div class="dock-item" data-app="gnome-control-center" title="Настройки">
+    <div class="dock-item" data-running="false" data-app="gnome-control-center" data-name="System Settings" title="Настройки">
       <div class="dock-icon" style="background: linear-gradient(180deg, #9a9aa5, #4a4a55);">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -186,13 +223,11 @@
       <span class="dot"></span>
     </div>
 
-    <!-- Trash -->
-    <div class="dock-item" data-app="nautilus" title="Корзина">
+    <div class="dock-item" data-running="false" data-app="nautilus" data-name="Files" title="Файлы">
       <div class="dock-icon" style="background: linear-gradient(180deg, #c8ccd4, #7a7f8a);">
         <svg viewBox="0 0 24 24" fill="none" stroke="#2a2a30"
              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="3 6 5 6 21 6"/>
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
         </svg>
       </div>
       <span class="dot"></span>

@@ -1,12 +1,69 @@
 /* ================================================================
-   SIamba OS — логика рабочего стола
+   SIamba OS — логика рабочего стола.
+   Состояние приложений синхронизируется поллингом (без push из тредов).
    ================================================================ */
 (() => {
   'use strict';
 
-  /* ------------------------------------------------------------
-     1. Часы в menu bar — обновление раз в секунду
-     ------------------------------------------------------------ */
+  const DEFAULT_TITLE = 'SIamba OS';
+  const POLL_MS       = 1500;
+  const CONFIRM_MS    = 3000;
+
+  const api = () => (window.pywebview && window.pywebview.api) || null;
+
+  /* ---------------- DOM ---------------- */
+  const el = {
+    activeName: document.getElementById('active-app-name'),
+    dock:       document.getElementById('dock'),
+    brandBtn:   document.getElementById('brand-btn'),
+    brandMenu:  document.getElementById('brand-menu'),
+    wifiBtn:    document.getElementById('wifi-btn'),
+    wifiPop:    document.getElementById('wifi-popover'),
+    volBtn:     document.getElementById('vol-btn'),
+    volPop:     document.getElementById('vol-popover'),
+    wifiToggle: document.getElementById('wifi-toggle'),
+    wifiList:   document.getElementById('wifi-list'),
+    wifiStatus: document.getElementById('wifi-status'),
+    volSlider:  document.getElementById('volume-slider'),
+    volLabel:   document.getElementById('volume-label'),
+    muteBtn:    document.getElementById('mute-btn'),
+  };
+
+  /* ---------------- Состояние ---------------- */
+  const state = {
+    running: new Set(),
+    active:  null,
+    names:   {},
+  };
+
+  const dockItems = Array.from(el.dock.querySelectorAll('.dock-item'));
+  const dockIcons = dockItems.map(it => it.querySelector('.dock-icon'));
+
+  dockItems.forEach(it => {
+    state.names[it.dataset.app] = it.dataset.name || it.dataset.app;
+  });
+
+  /* ---------------- Утилиты ---------------- */
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  function showToast(msg) {
+    let t = document.getElementById('toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'toast';
+      t.className = 'toast';
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => t.classList.remove('show'), 2200);
+  }
+
+  /* ================================================================
+     1. Часы
+     ================================================================ */
   const clockTime = document.getElementById('clock-time');
   const clockDate = document.getElementById('clock-date');
 
@@ -19,113 +76,407 @@
       weekday: 'short', day: 'numeric', month: 'short'
     });
   }
-  updateClock();
-  setInterval(updateClock, 1000);
 
-  /* ------------------------------------------------------------
-     2. Индикатор батареи (заглушка)
-        В реальной ОС сюда придёт значение из SystemAPI.
-     ------------------------------------------------------------ */
+  /* ================================================================
+     2. Батарея
+     ================================================================ */
   function setBattery(percent) {
-    const INNER_WIDTH = 18;   // доступная ширина внутри корпуса
-    const fill = document.querySelector('.battery-fill');
-    fill.setAttribute('width', (INNER_WIDTH * percent / 100).toFixed(1));
+    const INNER_WIDTH = 18;
+    document.querySelector('.battery-fill')
+            .setAttribute('width', (INNER_WIDTH * percent / 100).toFixed(1));
     document.getElementById('battery-text').textContent = percent + '%';
   }
-  setBattery(78);
 
-  /* ------------------------------------------------------------
-     3. Dock Magnification («рыбий глаз»)
+  /* ================================================================
+     3. Активное имя
+     ================================================================ */
+  function refreshActiveName() {
+    if (state.active && state.running.has(state.active)) {
+      el.activeName.textContent = state.names[state.active] || state.active;
+    } else {
+      el.activeName.textContent = DEFAULT_TITLE;
+    }
+  }
 
-     - ближайшая к курсору иконка ищется по её layout-координатам
-       (offsetLeft / offsetWidth не реагируют на CSS transform,
-        поэтому позиции не «плывут» во время анимации);
-     - scale: центр = 1.35, соседи = 1.15, остальные = 1;
-     - плавность обеспечивает CSS transition — JS только
-       выставляет конечное значение.
-     ------------------------------------------------------------ */
-  const dock  = document.getElementById('dock');
-  const items = Array.from(dock.querySelectorAll('.dock-item'));
-  const icons = items.map(it => it.querySelector('.dock-icon'));
+  /* ================================================================
+     4. Поллинг состояния приложений
+     ================================================================ */
+  function applyRunningSet(newSet) {
+    dockItems.forEach(it => {
+      it.dataset.running = newSet.has(it.dataset.app) ? 'true' : 'false';
+    });
+    if (!state.active || !newSet.has(state.active)) {
+      state.active = newSet.values().next().value || null;
+    }
+    state.running = newSet;
+    refreshActiveName();
+  }
 
+  let pollInFlight = false;
+
+  async function pollRunning() {
+    const a = api();
+    if (!a || typeof a.get_running_apps !== 'function') return;
+    if (pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const list = await a.get_running_apps();
+      applyRunningSet(new Set(Array.isArray(list) ? list : []));
+    } catch { /* noop */ }
+    finally { pollInFlight = false; }
+  }
+
+  /* ================================================================
+     5. Dock Magnification
+     ================================================================ */
   const SCALE_CENTER   = 1.35;
   const SCALE_NEIGHBOR = 1.15;
 
   function updateDock(clientX) {
-    const dockRect = dock.getBoundingClientRect();
+    const dockRect = el.dock.getBoundingClientRect();
     const mouseX   = clientX - dockRect.left;
 
-    // Ищем ближайшую иконку
-    let nearest = -1;
-    let minDist = Infinity;
-    for (let i = 0; i < items.length; i++) {
-      const center = items[i].offsetLeft + items[i].offsetWidth / 2;
+    let nearest = -1, minDist = Infinity;
+    for (let i = 0; i < dockItems.length; i++) {
+      const center = dockItems[i].offsetLeft + dockItems[i].offsetWidth / 2;
       const d = Math.abs(mouseX - center);
       if (d < minDist) { minDist = d; nearest = i; }
     }
-
-    // Применяем масштабы + z-index по дистанции
-    for (let i = 0; i < icons.length; i++) {
+    for (let i = 0; i < dockIcons.length; i++) {
       const dist  = Math.abs(i - nearest);
       const scale = dist === 0 ? SCALE_CENTER
-                  : dist === 1 ? SCALE_NEIGHBOR
-                  : 1;
-
-      icons[i].style.transform = `scale(${scale})`;
-      items[i].style.zIndex    = String(100 - dist);
+                  : dist === 1 ? SCALE_NEIGHBOR : 1;
+      dockIcons[i].style.transform = `scale(${scale})`;
+      dockItems[i].style.zIndex    = String(100 - dist);
     }
   }
 
   function resetDock() {
-    icons.forEach(icon => { icon.style.transform = 'scale(1)'; });
-    items.forEach(item => { item.style.zIndex = '1'; });
+    dockIcons.forEach(i => { i.style.transform = 'scale(1)'; });
+    dockItems.forEach(i => { i.style.zIndex = '1'; });
   }
 
-  dock.addEventListener('mousemove', (e) => updateDock(e.clientX));
-  dock.addEventListener('mouseleave', resetDock);
-
-  /* ------------------------------------------------------------
-     4. Клики по иконкам дока
-
-     Если приложение открыто внутри pywebview — вызываем
-     SystemAPI.test_launch; иначе просто логируем в консоль.
-     ------------------------------------------------------------ */
-  function launchApp(appId) {
-    if (window.pywebview && window.pywebview.api &&
-        typeof window.pywebview.api.test_launch === 'function') {
-      window.pywebview.api.test_launch(appId)
-        .then(res => console.log('[SIamba OS] launch result:', res))
-        .catch(err => console.error('[SIamba OS] launch error:', err));
+  /* ================================================================
+     6. Запуск / фокус приложений
+     ================================================================ */
+  async function launchOrFocus(appId) {
+    if (state.running.has(appId)) {
+      state.active = appId;
+      refreshActiveName();
+      return;
+    }
+    const a = api();
+    if (a && typeof a.launch_app === 'function') {
+      try {
+        const res = await a.launch_app(appId);
+        if (!res || !res.ok) {
+          showToast(`Не удалось запустить ${appId}: ${res && res.error || '?'}`);
+          return;
+        }
+        state.active = appId;
+        await pollRunning();
+      } catch (err) {
+        showToast(`Ошибка запуска: ${err}`);
+      }
     } else {
       console.log('[SIamba OS] launch →', appId);
+      const s = new Set(state.running); s.add(appId);
+      applyRunningSet(s);
     }
   }
 
-  items.forEach(item => {
-    item.addEventListener('click', () => launchApp(item.dataset.app));
+  /* ================================================================
+     7. Popovers
+     ================================================================ */
+  const allPopovers = [el.brandMenu, el.wifiPop, el.volPop];
+
+  function closeAllPopovers(except) {
+    allPopovers.forEach(p => { if (p && p !== except) p.hidden = true; });
+  }
+
+  function positionPopover(pop, anchor) {
+    pop.hidden = false;
+    const r  = anchor.getBoundingClientRect();
+    const pw = pop.offsetWidth;
+    const ph = pop.offsetHeight;
+
+    let left = r.left;
+    if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+    if (left < 8) left = 8;
+
+    let top = r.bottom + 6;
+    if (top + ph > window.innerHeight - 8) top = r.top - ph - 6;
+
+    pop.style.left = left + 'px';
+    pop.style.top  = top  + 'px';
+  }
+
+  el.brandBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = el.brandMenu.hidden;
+    closeAllPopovers(el.brandMenu);
+    if (willOpen) positionPopover(el.brandMenu, el.brandBtn);
+    else          el.brandMenu.hidden = true;
   });
 
-  /* ------------------------------------------------------------
-     5. Кнопки меню (заглушки, хуки для SystemAPI)
-     ------------------------------------------------------------ */
-  document.querySelectorAll('.menu button').forEach(btn => {
-    btn.addEventListener('click', () => {
+  el.wifiBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = el.wifiPop.hidden;
+    closeAllPopovers(el.wifiPop);
+    if (willOpen) {
+      positionPopover(el.wifiPop, el.wifiBtn);
+      startWifiLoop();
+    } else {
+      el.wifiPop.hidden = true;
+      stopWifiLoop();
+    }
+  });
+
+  el.volBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = el.volPop.hidden;
+    closeAllPopovers(el.volPop);
+    if (willOpen) {
+      positionPopover(el.volPop, el.volBtn);
+      startVolumeLoop();
+    } else {
+      el.volPop.hidden = true;
+      stopVolumeLoop();
+    }
+  });
+
+  document.addEventListener('click', () => {
+    closeAllPopovers();
+    stopWifiLoop();
+    stopVolumeLoop();
+  });
+
+  allPopovers.forEach(p => p && p.addEventListener('click', e => e.stopPropagation()));
+
+  /* ================================================================
+     8. Меню SIambaOS (двухшаговое подтверждение)
+     ================================================================ */
+  const pendingConfirm = new Map();
+
+  async function runPowerAction(action) {
+    const a = api();
+    if (!a || typeof a[action] !== 'function') {
+      showToast(`${action}: бэкенд недоступен`);
+      return;
+    }
+    try {
+      const res = await a[action]();
+      if (res && res.dev) {
+        showToast(action === 'shutdown'
+          ? 'DEV: выключение (симуляция)'
+          : 'DEV: перезагрузка (симуляция)');
+      } else if (res && res.ok) {
+        showToast(action === 'shutdown' ? 'Выключение…' : 'Перезагрузка…');
+      } else {
+        showToast(`${action}: ${res && res.error || 'ошибка'}`);
+      }
+    } catch (e) {
+      showToast(`${action}: ${e}`);
+    }
+  }
+
+  el.brandMenu.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', async () => {
       const action = btn.dataset.action;
-      console.log('[SIamba OS] menu action →', action);
-      // При интеграции с pywebview:
-      // window.pywebview.api.system_action(action);
+
+      if (action === 'shutdown' || action === 'reboot') {
+        const original = btn.dataset.label || btn.textContent;
+        btn.dataset.label = original;
+
+        if (!pendingConfirm.has(btn)) {
+          btn.textContent = action === 'shutdown'
+            ? 'Нажмите ещё раз: выключить'
+            : 'Нажмите ещё раз: перезагрузить';
+          const t = setTimeout(() => {
+            btn.textContent = original;
+            pendingConfirm.delete(btn);
+          }, CONFIRM_MS);
+          pendingConfirm.set(btn, t);
+          return;
+        }
+        clearTimeout(pendingConfirm.get(btn));
+        pendingConfirm.delete(btn);
+        btn.textContent = original;
+        closeAllPopovers();
+        await runPowerAction(action);
+        return;
+      }
+
+      closeAllPopovers();
+      if (action === 'about') {
+        showToast('SIamba OS · pre-alpha');
+      } else if (action === 'settings') {
+        launchOrFocus('gnome-control-center');
+      }
     });
   });
 
-  /* ------------------------------------------------------------
-     6. Обновление метрик из бэкенда (если доступен)
-     ------------------------------------------------------------ */
-  window.addEventListener('pywebviewready', async () => {
-    try {
-      const stats = await window.pywebview.api.get_system_stats();
-      console.log('[SIamba OS] system stats:', stats);
-    } catch (e) {
-      console.warn('[SIamba OS] stats unavailable:', e);
+  /* ================================================================
+     9. Wi-Fi popover
+     ================================================================ */
+  let wifiTimer = null;
+
+  function startWifiLoop() {
+    refreshWifi();
+    stopWifiLoop();
+    wifiTimer = setInterval(refreshWifi, 5000);
+  }
+  function stopWifiLoop() {
+    if (wifiTimer) { clearInterval(wifiTimer); wifiTimer = null; }
+  }
+
+  async function refreshWifi() {
+    const a = api();
+    if (!a || !a.get_wifi_state) {
+      el.wifiStatus.textContent = 'Бэкенд недоступен';
+      el.wifiList.innerHTML = '';
+      return;
     }
+    let st;
+    try { st = await a.get_wifi_state(); }
+    catch (e) { el.wifiStatus.textContent = 'Ошибка чтения состояния'; return; }
+
+    el.wifiToggle.checked = !!st.enabled;
+
+    if (!st.available)     el.wifiStatus.textContent = 'nmcli не найден';
+    else if (!st.enabled)  el.wifiStatus.textContent = 'Wi-Fi выключен';
+    else if (st.connected) el.wifiStatus.textContent = `Подключено: ${st.connected}`;
+    else                   el.wifiStatus.textContent = 'Не подключено';
+
+    el.wifiList.innerHTML = '';
+    const networks = st.networks || [];
+    if (!networks.length) {
+      el.wifiList.innerHTML = st.enabled
+        ? '<div class="wifi-empty">Сети не найдены…</div>'
+        : '<div class="wifi-empty">Включите Wi-Fi</div>';
+      return;
+    }
+    networks.forEach(n => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'wifi-item';
+      b.innerHTML = `<span class="wifi-ssid">${escapeHtml(n.ssid)}</span>
+                     <span class="wifi-sig">${n.signal}%</span>`;
+      b.addEventListener('click', async () => {
+        const res = await a.connect_wifi(n.ssid);
+        if (!res || !res.ok) showToast('Wi-Fi: ' + (res && res.error || 'ошибка'));
+        setTimeout(refreshWifi, 800);
+      });
+      el.wifiList.appendChild(b);
+    });
+  }
+
+  el.wifiToggle.addEventListener('change', async () => {
+    const a = api();
+    if (!a || !a.toggle_wifi) return;
+    el.wifiStatus.textContent = 'Переключение…';
+    try { await a.toggle_wifi(); } catch {}
+    // Даём NetworkManager время применить состояние и просканировать
+    setTimeout(refreshWifi, 1200);
+  });
+
+  /* ================================================================
+     10. Volume popover
+     ================================================================ */
+  let volumeDebounce   = null;
+  let volumeTimer      = null;
+  let volumeDragging   = false;
+  let lastFeedbackAt   = 0;
+  const FEEDBACK_MIN_MS = 150;
+
+  function startVolumeLoop() {
+    refreshVolume();
+    stopVolumeLoop();
+    volumeTimer = setInterval(refreshVolume, 2000);
+  }
+  function stopVolumeLoop() {
+    if (volumeTimer) { clearInterval(volumeTimer); volumeTimer = null; }
+  }
+
+  function renderVolumeIcon(muted) {
+    el.muteBtn.dataset.muted = muted ? 'true' : 'false';
+  }
+
+  async function refreshVolume() {
+    if (volumeDragging) return; // не перебиваем пользователя во время драга
+    const a = api();
+    if (!a || !a.get_volume) return;
+    try {
+      const v = await a.get_volume();
+      el.volSlider.value = v.volume;
+      el.volLabel.textContent = v.volume + '%';
+      renderVolumeIcon(v.muted);
+    } catch {}
+  }
+
+  async function playVolumeFeedback() {
+    const now = performance.now();
+    if (now - lastFeedbackAt < FEEDBACK_MIN_MS) return;
+    lastFeedbackAt = now;
+    const a = api();
+    if (a && a.play_volume_feedback) {
+      a.play_volume_feedback().catch(() => {});
+    }
+  }
+
+  el.volSlider.addEventListener('pointerdown', () => { volumeDragging = true; });
+
+  el.volSlider.addEventListener('input', () => {
+    el.volLabel.textContent = el.volSlider.value + '%';
+
+    clearTimeout(volumeDebounce);
+    const a = api();
+    if (!a || !a.set_volume) return;
+
+    // Звук — отдельно, с собственным троттлингом
+    playVolumeFeedback();
+
+    volumeDebounce = setTimeout(() => {
+      a.set_volume(parseInt(el.volSlider.value, 10)).catch(() => {});
+    }, 60);
+  });
+
+  el.volSlider.addEventListener('change', () => {
+    // Отпустили слайдер — синхронизируемся с бэкендом
+    volumeDragging = false;
+    setTimeout(refreshVolume, 150);
+  });
+
+  el.muteBtn.addEventListener('click', async () => {
+    const a = api();
+    if (!a || !a.toggle_mute) return;
+
+    // Оптимистичный флип — иконка реагирует мгновенно
+    const wasMuted = el.muteBtn.dataset.muted === 'true';
+    renderVolumeIcon(!wasMuted);
+
+    try { await a.toggle_mute(); } catch {}
+    // Подтверждаем реальным состоянием
+    setTimeout(refreshVolume, 120);
+  });
+
+  /* ================================================================
+     11. Инициализация
+     ================================================================ */
+  dockItems.forEach(item => {
+    item.addEventListener('click', () => launchOrFocus(item.dataset.app));
+  });
+
+  el.dock.addEventListener('mousemove', e => updateDock(e.clientX));
+  el.dock.addEventListener('mouseleave', resetDock);
+
+  updateClock();
+  setInterval(updateClock, 1000);
+  setBattery(78);
+  refreshActiveName();
+
+  window.addEventListener('pywebviewready', () => {
+    pollRunning();
+    setInterval(pollRunning, POLL_MS);
   });
 })();

@@ -235,6 +235,32 @@
 
   </div>
 
+  <!-- ============================================================
+     SPOTLIGHT (Ctrl+Space)
+     ============================================================ -->
+<div class="spotlight-overlay" id="spotlight-overlay" aria-hidden="true">
+  <div class="spotlight" role="dialog" aria-label="Поиск приложений">
+    <div class="spotlight-input-wrap">
+      <svg class="spotlight-search-icon" width="18" height="18"
+           viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="7"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <input type="text" id="spotlight-input"
+             placeholder="Поиск приложений…"
+             autocomplete="off" autocorrect="off"
+             autocapitalize="off" spellcheck="false">
+    </div>
+    <div class="spotlight-results" id="spotlight-results"></div>
+    <div class="spotlight-hint">
+      <span><kbd>↑</kbd><kbd>↓</kbd> навигация</span>
+      <span><kbd>↵</kbd> открыть</span>
+      <span><kbd>esc</kbd> закрыть</span>
+    </div>
+  </div>
+</div>
+
   <script src="app.js"></script>
 </body>
 </html>

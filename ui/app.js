@@ -479,4 +479,294 @@
     pollRunning();
     setInterval(pollRunning, POLL_MS);
   });
+  /* ================================================================
+     12. Spotlight (Ctrl+Space)
+     ================================================================ */
+  const spot = {
+    overlay:  document.getElementById('spotlight-overlay'),
+    input:    document.getElementById('spotlight-input'),
+    results:  document.getElementById('spotlight-results'),
+    apps:     null,     // кэш приложений
+    filtered: [],
+    selected: 0,
+    isOpen:   false,
+    loading:  false,
+  };
+
+  const SPOT_MAX_RESULTS = 12;
+
+  function escapeAttr(s) {
+    return String(s).replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  }
+
+  /* ---------- открытие / закрытие ---------- */
+  function openSpotlight() {
+    if (spot.isOpen) return;
+    spot.isOpen = true;
+    spot.overlay.classList.add('show');
+    spot.overlay.setAttribute('aria-hidden', 'false');
+    spot.input.value = '';
+    spot.selected = 0;
+    renderSpotlightResults();
+
+    // WebKitGTK не фокусирует элементы, пока overlay ещё visibility:hidden.
+    setTimeout(() => spot.input.focus(), 40);
+
+    if (!spot.apps && !spot.loading) loadApps();
+  }
+
+  function closeSpotlight() {
+    if (!spot.isOpen) return;
+    spot.isOpen = false;
+    spot.overlay.classList.remove('show');
+    spot.overlay.setAttribute('aria-hidden', 'true');
+    spot.input.blur();
+  }
+
+  function toggleSpotlight() {
+    spot.isOpen ? closeSpotlight() : openSpotlight();
+  }
+
+  /* ---------- загрузка списка ---------- */
+  async function loadApps() {
+    spot.loading = true;
+    renderSpotlightResults();
+
+    const a = api();
+    if (a && typeof a.scan_linux_apps === 'function') {
+      try {
+        const list = await a.scan_linux_apps();
+        spot.apps = Array.isArray(list) ? list : [];
+      } catch (e) {
+        spot.apps = [];
+        showToast('Не удалось получить список приложений');
+      }
+    } else {
+      // Dev-заглушка при открытии index.html в браузере
+      spot.apps = [
+        { id: 'firefox',           name: 'Firefox',         exec: 'firefox',                        bin: 'firefox',           comment: 'Веб-браузер' },
+        { id: 'gnome-terminal',    name: 'Терминал',        exec: 'gnome-terminal',                 bin: 'gnome-terminal',    comment: 'Эмулятор терминала' },
+        { id: 'xed',               name: 'Текстовый редактор', exec: 'xed',                         bin: 'xed',               comment: 'Простой редактор' },
+        { id: 'nautilus',          name: 'Файлы',           exec: 'nautilus',                       bin: 'nautilus',          comment: 'Файловый менеджер' },
+        { id: 'gnome-control-center', name: 'Настройки',    exec: 'gnome-control-center',           bin: 'gnome-control-center', comment: 'Параметры системы' },
+        { id: 'eog',               name: 'Просмотр изображений', exec: 'eog',                       bin: 'eog',               comment: 'Image Viewer' },
+      ];
+    }
+
+    spot.loading = false;
+    renderSpotlightResults();
+  }
+
+  /* ---------- fuzzy-скоринг ---------- */
+  function fuzzyScore(query, text) {
+    if (!query) return 0;
+    const q = query.toLowerCase();
+    const t = text.toLowerCase();
+
+    const idx = t.indexOf(q);
+    if (idx === 0)  return 1000;
+    if (idx > 0)    return Math.max(200, 800 - idx);
+
+    // Subsequence — все символы query идут по порядку
+    let qi = 0, ti = 0, score = 0, lastMatch = -1;
+    while (qi < q.length && ti < t.length) {
+      if (q[qi] === t[ti]) {
+        score += 10;
+        if (lastMatch === ti - 1) score += 5;   // бонус за непрерывность
+        if (ti === 0) score += 8;               // бонус за старт
+        lastMatch = ti;
+        qi++;
+      }
+      ti++;
+    }
+    return qi === q.length ? score : -1;
+  }
+
+  function filterApps(query) {
+    if (!spot.apps) return [];
+    const q = query.trim();
+
+    if (!q) return spot.apps.slice(0, SPOT_MAX_RESULTS);
+
+    const scored = [];
+    for (const app of spot.apps) {
+      const nameScore    = fuzzyScore(q, app.name || '');
+      const idScore      = fuzzyScore(q, app.id   || '');
+      const commentScore = fuzzyScore(q, app.comment || '');
+      const best = Math.max(
+        nameScore,
+        idScore      * 0.7,
+        commentScore * 0.4
+      );
+      if (best >= 0) scored.push({ app, score: best });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, SPOT_MAX_RESULTS).map(s => s.app);
+  }
+
+  /* ---------- рендер ---------- */
+  function renderSpotlightResults() {
+    spot.results.innerHTML = '';
+
+    if (spot.loading) {
+      spot.results.innerHTML = '<div class="spotlight-empty">Загрузка…</div>';
+      spot.filtered = [];
+      return;
+    }
+    if (!spot.apps) {
+      spot.filtered = [];
+      return;
+    }
+
+    spot.filtered = filterApps(spot.input.value);
+    if (spot.selected >= spot.filtered.length) {
+      spot.selected = Math.max(0, spot.filtered.length - 1);
+    }
+
+    if (!spot.filtered.length) {
+      spot.results.innerHTML =
+        '<div class="spotlight-empty">Ничего не найдено</div>';
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    spot.filtered.forEach((app, i) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'spotlight-item' + (i === spot.selected ? ' selected' : '');
+      item.dataset.index = String(i);
+
+      let iconHtml;
+      if (app.icon_path) {
+        const url = 'file://' + app.icon_path;
+        iconHtml = `<img class="spotlight-icon" src="${escapeAttr(url)}" alt="">`;
+      } else {
+        const letter = (app.name || '?').trim().charAt(0).toUpperCase();
+        iconHtml = `<span class="spotlight-icon spotlight-icon-fallback">${escapeHtml(letter)}</span>`;
+      }
+
+      item.innerHTML = `
+        ${iconHtml}
+        <span class="spotlight-item-text">
+          <span class="spotlight-item-name">${escapeHtml(app.name)}</span>
+          ${app.comment ? `<span class="spotlight-item-comment">${escapeHtml(app.comment)}</span>` : ''}
+        </span>`;
+
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        launchSpotlightApp(app);
+      });
+      item.addEventListener('mouseenter', () => {
+        spot.selected = i;
+        updateSpotlightSelection();
+      });
+
+      frag.appendChild(item);
+    });
+    spot.results.appendChild(frag);
+  }
+
+  function updateSpotlightSelection() {
+    const items = spot.results.querySelectorAll('.spotlight-item');
+    items.forEach((it, i) => it.classList.toggle('selected', i === spot.selected));
+    const sel = items[spot.selected];
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  }
+
+  /* ---------- запуск ---------- */
+  async function launchSpotlightApp(app) {
+    closeSpotlight();
+
+    const a = api();
+    const bin = app.bin || app.id;
+
+    if (a && typeof a.launch_app === 'function') {
+      try {
+        const res = await a.launch_app(bin, app.exec);
+        if (!res || !res.ok) {
+          showToast(`Не удалось запустить ${app.name}: ${res && res.error || '?'}`);
+          return;
+        }
+        // Помечаем активным и подтягиваем состояние — точка в доке
+        // загорится сразу, если иконка с таким bin есть.
+        state.active = bin;
+        refreshActiveName();
+        await pollRunning();
+      } catch (e) {
+        showToast(`Ошибка запуска: ${e}`);
+      }
+    } else {
+      console.log('[SIamba OS] spotlight launch →', app.name, app.exec);
+    }
+  }
+
+  /* ---------- горячие клавиши ---------- */
+  document.addEventListener('keydown', (e) => {
+    // Ctrl+Space — открыть/закрыть (Ctrl без Shift/Alt/Meta)
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey
+        && e.code === 'Space') {
+      e.preventDefault();
+      toggleSpotlight();
+      return;
+    }
+
+    if (!spot.isOpen) return;
+
+    switch (e.key) {
+      case 'Escape':
+        e.preventDefault();
+        closeSpotlight();
+        break;
+
+      case 'ArrowDown':
+        e.preventDefault();
+        if (spot.filtered.length) {
+          spot.selected = (spot.selected + 1) % spot.filtered.length;
+          updateSpotlightSelection();
+        }
+        break;
+
+      case 'ArrowUp':
+        e.preventDefault();
+        if (spot.filtered.length) {
+          spot.selected =
+            (spot.selected - 1 + spot.filtered.length) % spot.filtered.length;
+          updateSpotlightSelection();
+        }
+        break;
+
+      case 'Enter': {
+        e.preventDefault();
+        const app = spot.filtered[spot.selected];
+        if (app) launchSpotlightApp(app);
+        break;
+      }
+
+      case 'Home':
+        if (spot.filtered.length) {
+          e.preventDefault();
+          spot.selected = 0;
+          updateSpotlightSelection();
+        }
+        break;
+
+      case 'End':
+        if (spot.filtered.length) {
+          e.preventDefault();
+          spot.selected = spot.filtered.length - 1;
+          updateSpotlightSelection();
+        }
+        break;
+    }
+  });
+
+  /* ---------- ввод и клик снаружи ---------- */
+  spot.input.addEventListener('input', () => {
+    spot.selected = 0;
+    renderSpotlightResults();
+  });
+
+  spot.overlay.addEventListener('click', (e) => {
+    if (e.target === spot.overlay) closeSpotlight();
+  });
 })();

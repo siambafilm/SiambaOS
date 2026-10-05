@@ -491,3 +491,185 @@ button.indicator:active { background: rgba(255, 255, 255, 0.18); }
 .icon-btn[data-muted="true"] { color: #ff6b6b; }
 .icon-btn[data-muted="true"] .icon-vol-on  { display: none;  }
 .icon-btn[data-muted="true"] .icon-vol-off { display: block; }
+
+/* ================================================================
+   SPOTLIGHT
+   ================================================================ */
+.spotlight-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 18vh;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.18s ease, visibility 0s linear 0.18s;
+}
+.spotlight-overlay.show {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 0.18s ease, visibility 0s;
+}
+
+.spotlight {
+  width: min(640px, 90vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(30, 30, 40, 0.82);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  box-shadow:
+    0 25px 70px rgba(0, 0, 0, 0.60),
+    0 0 0 0.5px rgba(255, 255, 255, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  overflow: hidden;
+  transform: translateY(-10px) scale(0.97);
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.spotlight-overlay.show .spotlight {
+  transform: translateY(0) scale(1);
+}
+
+/* ---------- Input ---------- */
+.spotlight-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 22px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+.spotlight-search-icon {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+#spotlight-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: 0.2px;
+  caret-color: var(--accent, #58a6ff);
+  user-select: text;
+}
+#spotlight-input::placeholder {
+  color: rgba(245, 245, 247, 0.35);
+}
+
+/* ---------- Results ---------- */
+.spotlight-results {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  min-height: 0;
+}
+.spotlight-results::-webkit-scrollbar { width: 8px; }
+.spotlight-results::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+}
+
+.spotlight-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-radius: 10px;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.10s ease;
+}
+.spotlight-item.selected {
+  background: rgba(255, 255, 255, 0.14);
+}
+.spotlight-item:active {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.spotlight-icon {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.04);
+}
+.spotlight-icon-fallback {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #7dd3fc, #c084fc);
+  color: #0a0a14;
+  font-weight: 700;
+  font-size: 15px;
+  font-family: system-ui, sans-serif;
+}
+
+.spotlight-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.spotlight-item-name {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.spotlight-item-comment {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spotlight-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ---------- Hint ---------- */
+.spotlight-hint {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  padding: 8px 12px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.spotlight-hint kbd {
+  display: inline-block;
+  min-width: 16px;
+  padding: 1px 5px;
+  margin-right: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text);
+}

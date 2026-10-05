@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+import os
 
 import webview
 
@@ -35,9 +36,10 @@ def _log(*args):
 # ==================================================================
 class SystemAPI:
     def __init__(self):
-        # app_id -> {"proc": Popen, "started_at": float}
         self._apps: dict[str, dict] = {}
         self._lock = threading.RLock()
+        self._apps_cache: tuple[float, list[dict]] | None = None
+        self._apps_cache_ttl = 60.0   # сек
         threading.Thread(target=self._watch_loop, daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -88,7 +90,12 @@ class SystemAPI:
     # ------------------------------------------------------------------
     # Запуск приложений
     # ------------------------------------------------------------------
-    def launch_app(self, app_id: str) -> dict:
+    def launch_app(self, app_id: str, exec_cmd: str | None = None) -> dict:
+        """
+        app_id — ключ, под которым приложение регистрируется в состоянии
+                (совпадает с data-app иконки в доке).
+        exec_cmd — что реально запускать; если None, запускается сам app_id.
+        """
         if not app_id or not isinstance(app_id, str):
             return {"ok": False, "error": "empty app_id"}
 
@@ -96,8 +103,9 @@ class SystemAPI:
             if self._is_running_locked(app_id):
                 return {"ok": True, "already_running": True}
 
+        cmd_str = exec_cmd if exec_cmd else app_id
         try:
-            argv = shlex.split(app_id)
+            argv = shlex.split(cmd_str)
         except ValueError as e:
             return {"ok": False, "error": f"parse error: {e}"}
         if not argv:
@@ -120,7 +128,11 @@ class SystemAPI:
             return {"ok": False, "error": str(e)}
 
         with self._lock:
-            self._apps[app_id] = {"proc": proc, "started_at": time.time()}
+            self._apps[app_id] = {
+                "proc": proc,
+                "started_at": time.time(),
+                "argv": argv,          # для pgrep-fallback
+            }
 
         return {"ok": True, "pid": proc.pid}
 
@@ -142,10 +154,12 @@ class SystemAPI:
         if age < FORK_GRACE:
             return True
 
+        argv = info.get("argv") or [app_id]
         try:
-            name = Path(shlex.split(app_id)[0]).name
+            name = Path(argv[0]).name
         except Exception:
             return False
+
         r = self._run(["pgrep", "-x", name], timeout=1)
         return bool(r and r.returncode == 0 and r.stdout.strip())
 
@@ -364,6 +378,148 @@ class SystemAPI:
             return {"ok": True}
         return {"ok": False,
                 "error": (r.stderr or r.stdout or "connect failed").strip()}
+
+    # ------------------------------------------------------------------
+    # Сканирование приложений
+    # ------------------------------------------------------------------
+    def scan_linux_apps(self) -> list[dict]:
+        """Читает .desktop-файлы из системной и пользовательской директорий."""
+        now = time.time()
+        if self._apps_cache and (now - self._apps_cache[0]) < self._apps_cache_ttl:
+            return self._apps_cache[1]
+
+        dirs = [
+            Path("/usr/share/applications"),
+            Path("/usr/local/share/applications"),
+            Path.home() / ".local/share/applications",
+        ]
+
+        seen: set[str] = set()
+        results: list[dict] = []
+
+        for d in dirs:
+            if not d.is_dir():
+                continue
+            for desktop_file in d.glob("*.desktop"):
+                entry = self._parse_desktop(desktop_file)
+                if entry and entry["id"] not in seen:
+                    seen.add(entry["id"])
+                    results.append(entry)
+
+        results.sort(key=lambda x: x["name"].lower())
+        self._apps_cache = (now, results)
+        if DEV_MODE:
+            _log(f"scanned {len(results)} .desktop entries")
+        return results
+
+    @staticmethod
+    def _localized(fields: dict, base: str) -> str:
+        """Возвращает Name[ru_RU] → Name[ru] → Name по локали окружения."""
+        langs: list[str] = []
+        for var in ("LC_MESSAGES", "LANG"):
+            val = os.environ.get(var, "")
+            if val:
+                part = val.split(".")[0]
+                if part:
+                    langs.append(part)
+                    langs.append(part.split("_")[0])
+        for lang in langs:
+            key = f"{base}[{lang}]"
+            if key in fields:
+                return fields[key]
+        return fields.get(base, "")
+
+    def _parse_desktop(self, path: Path) -> dict | None:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+
+        in_entry = False
+        fields: dict[str, str] = {}
+        for raw in content.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("["):
+                in_entry = (line == "[Desktop Entry]")
+                continue
+            if not in_entry or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k not in fields:          # первое значение выигрывает
+                fields[k] = v.strip()
+
+        if fields.get("Type") != "Application":
+            return None
+        if fields.get("NoDisplay", "").lower() == "true":
+            return None
+        if fields.get("Hidden", "").lower() == "true":
+            return None
+
+        name = self._localized(fields, "Name").strip()
+        exec_line = fields.get("Exec", "").strip()
+        if not name or not exec_line:
+            return None
+
+        # Убираем field codes ( %f %F %u %U %d %D %n %N %i %c %k %v %m )
+        exec_clean = re.sub(r"%[fFuUdDnNickvm]", "", exec_line)
+        exec_clean = re.sub(r"\s+", " ", exec_clean).strip()
+        if not exec_clean:
+            return None
+
+        if fields.get("Terminal", "").lower() == "true":
+            exec_clean = "x-terminal-emulator -e " + exec_clean
+
+        # basename первого токена — совпадает с data-app иконок дока
+        try:
+            bin_name = Path(shlex.split(exec_clean)[0]).name
+        except Exception:
+            bin_name = path.stem
+
+        icon = fields.get("Icon", "").strip()
+        icon_path = self._resolve_icon(icon) if icon else None
+
+        return {
+            "id":        path.stem,
+            "name":      name,
+            "exec":      exec_clean,
+            "bin":       bin_name,
+            "icon":      icon,
+            "icon_path": icon_path,
+            "comment":   self._localized(fields, "Comment").strip(),
+        }
+
+    @staticmethod
+    def _resolve_icon(icon: str) -> str | None:
+        if not icon:
+            return None
+        p = Path(icon)
+        if p.is_absolute() and p.is_file():
+            return str(p)
+
+        bases = [
+            Path("/usr/share/icons/hicolor"),
+            Path("/usr/share/icons/Adwaita"),
+            Path("/usr/share/pixmaps"),
+            Path.home() / ".local/share/icons",
+        ]
+        sizes = ["256x256", "128x128", "64x64", "48x48", "32x32", "scalable"]
+        exts  = [".png", ".svg", ".xpm"]
+
+        for base in bases:
+            if not base.is_dir():
+                continue
+            for ext in exts:                        # плоская раскладка
+                f = base / (icon + ext)
+                if f.is_file():
+                    return str(f)
+            for size in sizes:                      # <base>/<size>/apps/
+                for ext in exts:
+                    f = base / size / "apps" / (icon + ext)
+                    if f.is_file():
+                        return str(f)
+        return None
 
 
 # ==================================================================

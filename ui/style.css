@@ -1,0 +1,210 @@
+/* ================================================================
+   SIamba OS — рабочий стол в стиле macOS Sequoia
+   ================================================================ */
+
+/* ---------- Дизайн-токены ---------- */
+:root {
+  --text:          #f5f5f7;
+  --text-dim:      rgba(245, 245, 247, 0.72);
+  --glass-bg:      rgba(18, 18, 26, 0.55);
+  --glass-border:  rgba(255, 255, 255, 0.10);
+  --menu-h:        28px;
+  --dock-icon:     56px;
+  --dock-gap:      6px;
+}
+
+/* ---------- Reset ---------- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: #05050a;
+  color: var(--text);
+  font-family: -apple-system, "SF Pro Text", "Inter",
+               system-ui, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  cursor: default;
+  user-select: none;
+}
+
+/* ================================================================
+   ОБОИ (Sequoia-style aurora, чистый CSS)
+   ================================================================ */
+.wallpaper {
+  position: fixed; inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(ellipse 80% 60% at 28% 18%, rgba(140,  90, 230, 0.50), transparent 62%),
+    radial-gradient(ellipse 70% 55% at 78% 32%, rgba(230,  80, 150, 0.35), transparent 65%),
+    radial-gradient(ellipse 60% 70% at 18% 82%, rgba( 60, 140, 240, 0.32), transparent 65%),
+    radial-gradient(ellipse 90% 55% at 82% 92%, rgba(180,  80, 210, 0.40), transparent 62%),
+    linear-gradient(180deg, #0a0614 0%, #0d0820 50%, #120a26 100%);
+}
+.wallpaper::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at center, transparent 35%, rgba(0,0,0,0.55) 100%);
+}
+
+/* ================================================================
+   MENU BAR
+   ================================================================ */
+.menubar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: var(--menu-h);
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid var(--glass-border);
+  z-index: 1000;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.menubar-left,
+.menubar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.menubar-right { justify-content: flex-end; gap: 14px; }
+
+.menubar-center {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.menubar-center #clock-date { color: var(--text-dim); }
+
+/* Бренд */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+/* Текстовое меню */
+.menu { display: flex; gap: 2px; }
+.menu button {
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 5px;
+  transition: background 0.15s ease;
+}
+.menu button:hover  { background: rgba(255, 255, 255, 0.12); }
+.menu button:active { background: rgba(255, 255, 255, 0.20); }
+
+/* Индикаторы */
+.indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-dim);
+  transition: color 0.15s ease;
+  cursor: pointer;
+}
+.indicator:hover { color: var(--text); }
+.battery-text { font-variant-numeric: tabular-nums; font-size: 12px; }
+
+/* ================================================================
+   DOCK
+   ================================================================ */
+.dock {
+  position: fixed;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  gap: var(--dock-gap);
+  padding: 10px 12px 12px;
+  background: rgba(20, 20, 28, 0.45);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 22px;
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.55),
+    0 0 0 0.5px rgba(255, 255, 255, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  z-index: 999;
+  overflow: visible;
+}
+
+/* Слот фиксированного размера — НЕ трансформируется. */
+.dock-item {
+  position: relative;
+  width: var(--dock-icon);
+  height: var(--dock-icon);
+  cursor: pointer;
+  z-index: 1;
+}
+
+/* Трансформируется только эта обёртка, origin — снизу по центру. */
+.dock-icon {
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  transform-origin: bottom center;
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+              filter    0.12s ease;
+  box-shadow:
+    0 6px 14px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+  will-change: transform;
+}
+/* Верхний блик «стекла» */
+.dock-icon::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg,
+              rgba(255,255,255,0.20),
+              rgba(255,255,255,0) 48%);
+  pointer-events: none;
+}
+.dock-icon svg { width: 60%; height: 60%; display: block; }
+
+/* Индикатор активности запущенного приложения */
+.dock-item .dot {
+  position: absolute;
+  bottom: -7px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 6px 1px rgba(255, 255, 255, 0.9);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+.dock-item[data-running="true"] .dot { opacity: 1; }
+
+/* Тактильная отдача при нажатии */
+.dock-item:active .dock-icon { filter: brightness(0.82); }

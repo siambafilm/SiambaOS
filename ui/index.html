@@ -2,137 +2,204 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>MyOS</title>
-<style>
-  :root {
-    --bg: #0e1117;
-    --panel: #161b22;
-    --border: #30363d;
-    --accent: #58a6ff;
-    --text: #e6edf3;
-    --muted: #8b949e;
-  }
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; height: 100%;
-    background: var(--bg);
-    color: var(--text);
-    font-family: system-ui, "Segoe UI", Roboto, sans-serif;
-    user-select: none;
-  }
-  .desktop {
-    display: grid;
-    place-items: center;
-    height: 100%;
-    padding: 24px;
-  }
-  .panel {
-    width: min(720px, 90vw);
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 24px 28px;
-    box-shadow: 0 20px 60px rgba(0,0,0,.5);
-  }
-  h1 {
-    margin: 0 0 16px;
-    font-size: 20px;
-    font-weight: 600;
-    letter-spacing: .5px;
-  }
-  .stats {
-    display: grid;
-    grid-template-columns: 140px 1fr;
-    row-gap: 8px;
-    column-gap: 16px;
-    margin-bottom: 20px;
-    font-size: 14px;
-  }
-  .stats .k { color: var(--muted); }
-  .stats .v { color: var(--text); font-family: ui-monospace, monospace; }
-
-  button {
-    background: var(--accent);
-    color: #0b1220;
-    border: none;
-    padding: 10px 16px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: filter .15s ease;
-  }
-  button:hover { filter: brightness(1.1); }
-  button:active { filter: brightness(.9); }
-
-  .log {
-    margin-top: 16px;
-    padding: 10px 12px;
-    background: #0b0f16;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    font-family: ui-monospace, monospace;
-    font-size: 12px;
-    color: var(--muted);
-    min-height: 40px;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SIamba OS</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="desktop">
-    <div class="panel">
-      <h1>MyOS · Система</h1>
 
-      <div class="stats" id="stats">
-        <span class="k">Пользователь:</span><span class="v" data-k="user">…</span>
-        <span class="k">Ядро:</span>       <span class="v" data-k="kernel">…</span>
-        <span class="k">Аптайм:</span>     <span class="v" data-k="uptime">…</span>
-        <span class="k">Хост:</span>       <span class="v" data-k="hostname">…</span>
-        <span class="k">Дистрибутив:</span><span class="v" data-k="os_release">…</span>
+  <div class="wallpaper"></div>
+
+  <!-- ============================================================
+       MENU BAR
+       ============================================================ -->
+  <header class="menubar">
+    <div class="menubar-left">
+      <div class="brand">
+        <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true">
+          <defs>
+            <linearGradient id="logoGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#7dd3fc"/>
+              <stop offset="1" stop-color="#c084fc"/>
+            </linearGradient>
+          </defs>
+          <path d="M6 3 H18 A3 3 0 0 1 21 6 V18 A3 3 0 0 1 18 21 H6 A3 3 0 0 1 3 18 V6 A3 3 0 0 1 6 3 Z"
+                fill="url(#logoGrad)"/>
+          <text x="12" y="16.5" text-anchor="middle"
+                font-size="12" font-weight="700" fill="#0a0a14"
+                font-family="system-ui, sans-serif">S</text>
+        </svg>
+        <span>SIamba OS</span>
       </div>
 
-      <button id="btn-launch">Проверить мост запуска</button>
-      <div class="log" id="log">ожидание…</div>
+      <nav class="menu">
+        <button type="button" data-action="system">Система</button>
+        <button type="button" data-action="reboot">Перезагрузка</button>
+        <button type="button" data-action="shutdown">Выключение</button>
+      </nav>
     </div>
+
+    <div class="menubar-center">
+      <span id="clock-date">—</span>
+      <span id="clock-time">--:--:--</span>
+    </div>
+
+    <div class="menubar-right">
+      <div class="indicator" title="Wi-Fi">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+          <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+          <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+          <circle cx="12" cy="20" r="0.9" fill="currentColor" stroke="none"/>
+        </svg>
+      </div>
+
+      <div class="indicator" title="Звук">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+        </svg>
+      </div>
+
+      <div class="indicator" title="Батарея">
+        <svg width="26" height="13" viewBox="0 0 28 14" aria-hidden="true">
+          <rect x="0.5" y="0.5" width="22" height="13" rx="3.5"
+                fill="none" stroke="currentColor" stroke-opacity="0.55"/>
+          <rect class="battery-fill" x="2" y="2" width="14" height="10"
+                rx="2" fill="currentColor"/>
+          <rect x="24" y="4.5" width="2" height="5" rx="1"
+                fill="currentColor" fill-opacity="0.55"/>
+        </svg>
+        <span class="battery-text" id="battery-text">—</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============================================================
+       DOCK
+       ============================================================ -->
+  <div class="dock" id="dock">
+
+    <!-- Finder -->
+    <div class="dock-item" data-running="true" data-app="xed" title="Finder">
+      <div class="dock-icon" style="background: linear-gradient(180deg, #4fa8f0, #1a5fc4);">
+        <svg viewBox="0 0 100 100" fill="none">
+          <ellipse cx="35" cy="42" rx="4" ry="9" fill="#fff"/>
+          <ellipse cx="65" cy="42" rx="4" ry="9" fill="#fff"/>
+          <path d="M28 66 Q50 84 72 66" stroke="#fff" stroke-width="5"
+                fill="none" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <span class="dot"></span>
+    </div>
+
+    <!-- Terminal -->
+    <div class="dock-item" data-running="true" data-app="gnome-terminal" title="Терминал">
+      <div class="dock-icon" style="background: linear-gradient(180deg, #2b2b33, #101015);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#7ee787"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="5 17 11 11 5 5"/>
+          <line x1="13" y1="19" x2="21" y2="19"/>
+        </svg>
+      </div>
+      <span class="dot"></span>
+    </div>
+
+    <!-- Browser -->
+    <div class="dock-item" data-running="true" data-app="firefox" title="Браузер">
+      <div class="dock-icon" style="background: linear-gradient(180deg, #58c4ff, #1a7fd4);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="2" y1="12" x2="22" y2="12"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+      </div>
+      <span class="dot"></span>
+    </div>
+
+    <!-- Mail -->
+    <div class="dock-item" data-running="true" data-app="thunderbird" title="Почта">
+      <div class="dock-icon" style="background: linear-gradient(180deg, #5ec8ff, #1a7fd4);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="4" width="20" height="16" rx="3"/>
+          <path d="m22 6-10 7L2 6"/>
+        </svg>
+      </div>
+      <span class="dot"></span>
+    </div>
+
+    <!-- Music -->
+    <div class="dock-item" data-app="rhythmbox" title="Музыка">
+      <div class="dock-icon" style="background: linear-gradient(180deg, #ff5e8a, #c11a55);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 18V5l12-2v13"/>
+          <circle cx="6" cy="18" r="3"/>
+          <circle cx="18" cy="16" r="3"/>
+        </svg>
+      </div>
+      <span class="dot"></span>
+    </div>
+
+    <!-- Photos -->
+    <div class="dock-item" data-app="eog" title="Фото">
+      <div class="dock-icon" style="background: linear-gradient(135deg, #ffb84d 0%, #ff5e8a 50%, #a855f7 100%);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="3"/>
+          <circle cx="9" cy="9" r="2"/>
+          <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+        </svg>
+      </div>
+      <span class="dot"></span>
+    </div>
+
+    <!-- Calendar -->
+    <div class="dock-item" data-app="gnome-calendar" title="Календарь">
+      <div class="dock-icon" style="background: #ffffff;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#e11d48"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="18" rx="3"/>
+          <line x1="16" y1="2" x2="16" y2="6"/>
+          <line x1="8"  y1="2" x2="8"  y2="6"/>
+          <line x1="3"  y1="10" x2="21" y2="10"/>
+        </svg>
+      </div>
+      <span class="dot"></span>
+    </div>
+
+    <!-- Settings -->
+    <div class="dock-item" data-app="gnome-control-center" title="Настройки">
+      <div class="dock-icon" style="background: linear-gradient(180deg, #9a9aa5, #4a4a55);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </div>
+      <span class="dot"></span>
+    </div>
+
+    <!-- Trash -->
+    <div class="dock-item" data-app="nautilus" title="Корзина">
+      <div class="dock-icon" style="background: linear-gradient(180deg, #c8ccd4, #7a7f8a);">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#2a2a30"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+        </svg>
+      </div>
+      <span class="dot"></span>
+    </div>
+
   </div>
 
-<script>
-  const log = (msg) => {
-    document.getElementById("log").textContent =
-      `[${new Date().toLocaleTimeString()}] ${msg}`;
-  };
-
-  async function loadStats() {
-    try {
-      const s = await window.pywebview.api.get_system_stats();
-      document.querySelectorAll(".stats .v").forEach(el => {
-        const key = el.dataset.k;
-        el.textContent = s[key] ?? "—";
-      });
-    } catch (e) {
-      log(`Ошибка загрузки метрик: ${e}`);
-    }
-  }
-
-  async function launchTest() {
-    log("Запуск: xed …");
-    try {
-      const res = await window.pywebview.api.test_launch("xed");
-      log(res.ok ? `OK · pid=${res.pid} · ${res.argv.join(" ")}`
-                 : `Ошибка: ${res.error}`);
-    } catch (e) {
-      log(`Ошибка вызова: ${e}`);
-    }
-  }
-
-  // pywebview инжектит window.pywebview после загрузки страницы,
-  // поэтому ждём событие pywebviewready, а не DOMContentLoaded.
-  window.addEventListener("pywebviewready", () => {
-    loadStats();
-    document.getElementById("btn-launch").addEventListener("click", launchTest);
-  });
-</script>
+  <script src="app.js"></script>
 </body>
 </html>

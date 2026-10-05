@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>MyOS</title>
+<style>
+  :root {
+    --bg: #0e1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --text: #e6edf3;
+    --muted: #8b949e;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+    user-select: none;
+  }
+  .desktop {
+    display: grid;
+    place-items: center;
+    height: 100%;
+    padding: 24px;
+  }
+  .panel {
+    width: min(720px, 90vw);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 28px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  h1 {
+    margin: 0 0 16px;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: .5px;
+  }
+  .stats {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    row-gap: 8px;
+    column-gap: 16px;
+    margin-bottom: 20px;
+    font-size: 14px;
+  }
+  .stats .k { color: var(--muted); }
+  .stats .v { color: var(--text); font-family: ui-monospace, monospace; }
+
+  button {
+    background: var(--accent);
+    color: #0b1220;
+    border: none;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter .15s ease;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:active { filter: brightness(.9); }
+
+  .log {
+    margin-top: 16px;
+    padding: 10px 12px;
+    background: #0b0f16;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--muted);
+    min-height: 40px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+</style>
+</head>
+<body>
+  <div class="desktop">
+    <div class="panel">
+      <h1>MyOS · Система</h1>
+
+      <div class="stats" id="stats">
+        <span class="k">Пользователь:</span><span class="v" data-k="user">…</span>
+        <span class="k">Ядро:</span>       <span class="v" data-k="kernel">…</span>
+        <span class="k">Аптайм:</span>     <span class="v" data-k="uptime">…</span>
+        <span class="k">Хост:</span>       <span class="v" data-k="hostname">…</span>
+        <span class="k">Дистрибутив:</span><span class="v" data-k="os_release">…</span>
+      </div>
+
+      <button id="btn-launch">Проверить мост запуска</button>
+      <div class="log" id="log">ожидание…</div>
+    </div>
+  </div>
+
+<script>
+  const log = (msg) => {
+    document.getElementById("log").textContent =
+      `[${new Date().toLocaleTimeString()}] ${msg}`;
+  };
+
+  async function loadStats() {
+    try {
+      const s = await window.pywebview.api.get_system_stats();
+      document.querySelectorAll(".stats .v").forEach(el => {
+        const key = el.dataset.k;
+        el.textContent = s[key] ?? "—";
+      });
+    } catch (e) {
+      log(`Ошибка загрузки метрик: ${e}`);
+    }
+  }
+
+  async function launchTest() {
+    log("Запуск: xed …");
+    try {
+      const res = await window.pywebview.api.test_launch("xed");
+      log(res.ok ? `OK · pid=${res.pid} · ${res.argv.join(" ")}`
+                 : `Ошибка: ${res.error}`);
+    } catch (e) {
+      log(`Ошибка вызова: ${e}`);
+    }
+  }
+
+  // pywebview инжектит window.pywebview после загрузки страницы,
+  // поэтому ждём событие pywebviewready, а не DOMContentLoaded.
+  window.addEventListener("pywebviewready", () => {
+    loadStats();
+    document.getElementById("btn-launch").addEventListener("click", launchTest);
+  });
+</script>
+</body>
+</html>

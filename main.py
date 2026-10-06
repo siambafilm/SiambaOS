@@ -14,10 +14,12 @@ import threading
 import time
 from pathlib import Path
 import os
+import json
 
 import webview
 
 DEV_MODE     = True
+DEVTOOLS = False
 WINDOW_TITLE = "SIamba OS"
 BASE_DIR     = Path(__file__).resolve().parent
 UI_INDEX     = BASE_DIR / "ui" / "index.html"
@@ -40,6 +42,7 @@ class SystemAPI:
         self._lock = threading.RLock()
         self._apps_cache: tuple[float, list[dict]] | None = None
         self._apps_cache_ttl = 60.0   # сек
+        self._dock_config_path = Path.home() / ".config" / "siamba-os" / "dock.json"
         threading.Thread(target=self._watch_loop, daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -521,6 +524,45 @@ class SystemAPI:
                         return str(f)
         return None
 
+    # ------------------------------------------------------------------
+    # Конфигурация дока
+    # ------------------------------------------------------------------
+    DEFAULT_DOCK = [
+        "xed", "gnome-terminal", "firefox", "thunderbird", "rhythmbox",
+        "eog", "gnome-calendar", "gnome-control-center", "nautilus",
+    ]
+
+    def get_dock_config(self) -> list[str]:
+        try:
+            if self._dock_config_path.exists():
+                data = json.loads(self._dock_config_path.read_text(encoding="utf-8"))
+                if isinstance(data, list) and all(isinstance(x, str) for x in data):
+                    return data
+        except (OSError, json.JSONDecodeError) as e:
+            _log(f"dock config read failed: {e}")
+        return list(self.DEFAULT_DOCK)
+
+    def set_dock_config(self, ids: list) -> dict:
+        if not isinstance(ids, list):
+            return {"ok": False, "error": "expected list"}
+
+        clean: list[str] = []
+        for x in ids:
+            if isinstance(x, str) and x.strip() and x not in clean:
+                clean.append(x.strip())
+            if len(clean) >= 30:
+                break
+
+        try:
+            self._dock_config_path.parent.mkdir(parents=True, exist_ok=True)
+            self._dock_config_path.write_text(
+                json.dumps(clean, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return {"ok": True, "dock": clean}
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+
 
 # ==================================================================
 # Точка входа
@@ -539,7 +581,7 @@ def main() -> int:
         fullscreen=not DEV_MODE,
         min_size=(800, 480),
     )
-    webview.start(debug=DEV_MODE)
+    webview.start(debug=DEVTOOLS)
     return 0
 
 

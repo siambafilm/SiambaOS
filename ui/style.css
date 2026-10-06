@@ -37,7 +37,7 @@ html, body {
    ================================================================ */
 .wallpaper {
   position: fixed; inset: 0;
-  z-index: -2;
+  
   overflow: hidden;
   background: #08051a;
 }

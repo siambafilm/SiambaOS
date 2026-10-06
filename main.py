@@ -6,15 +6,18 @@ pywebview это приводит к дедлокам и падениям. Вм�
 опрашивает get_running_apps() раз в ~1.5 секунды.
 """
 
+import json
+import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 from pathlib import Path
-import os
-import json
 
 import webview
 
@@ -43,6 +46,10 @@ class SystemAPI:
         self._apps_cache: tuple[float, list[dict]] | None = None
         self._apps_cache_ttl = 60.0   # сек
         self._dock_config_path = Path.home() / ".config" / "siamba-os" / "dock.json"
+        threading.Thread(target=self._watch_loop, daemon=True).start()
+            # --- новое ---
+        self._siamba_apps: dict[str, object] = {}     # "siamba:<id>" -> window
+        self._app_manager = None                       # AppManager
         threading.Thread(target=self._watch_loop, daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -141,8 +148,10 @@ class SystemAPI:
 
     def get_running_apps(self) -> list[str]:
         with self._lock:
-            return [aid for aid in list(self._apps.keys())
+            linux = [aid for aid in list(self._apps.keys())
                     if self._is_running_locked(aid)]
+            siamba = list(self._siamba_apps.keys())
+        return linux + siamba
 
     def _is_running_locked(self, app_id: str) -> bool:
         info = self._apps.get(app_id)
@@ -563,6 +572,438 @@ class SystemAPI:
         except OSError as e:
             return {"ok": False, "error": str(e)}
 
+    # ------------------------------------------------------------------
+    # Интеграция с AppManager
+    # ------------------------------------------------------------------
+    def set_app_manager(self, mgr):
+        self._app_manager = mgr
+
+    def install_app(self, package_path: str) -> dict:
+        if not self._app_manager:
+            return {"ok": False, "error": "app manager unavailable"}
+        return self._app_manager.install_app(package_path)
+
+    def list_my_apps(self) -> list:
+        if not self._app_manager:
+            return []
+        return self._app_manager.list_apps()
+
+    def launch_my_app(self, app_id: str) -> dict:
+        if not self._app_manager:
+            return {"ok": False, "error": "app manager unavailable"}
+        return self._app_manager.launch_my_app(app_id)
+
+    def uninstall_app(self, app_id: str) -> dict:
+        if not self._app_manager:
+            return {"ok": False, "error": "app manager unavailable"}
+        return self._app_manager.uninstall_app(app_id)
+
+    # ------------------------------------------------------------------
+    # Регистрация окон siamba-приложений (для точек в доке)
+    # ------------------------------------------------------------------
+    def _register_siamba_app(self, key: str, window) -> None:
+        with self._lock:
+            self._siamba_apps[key] = window
+
+    def _unregister_siamba_app(self, key: str) -> None:
+        with self._lock:
+            self._siamba_apps.pop(key, None)
+
+# ==================================================================
+# AppBridge — js_api для окна конкретного siamba-приложения
+# ==================================================================
+class AppBridge:
+    """
+    Изолирует UI приложения от бэкенда и от системы:
+      JS (ui приложения) ↔ AppBridge.call(...) ↔ subprocess stdin
+      subprocess stdout (proxy) ↔ AppBridge ↔ SystemAPI (whitelist)
+    """
+
+    # Разрешённые системные методы — только их может вызвать приложение.
+    # Всё остальное отбивается с ошибкой "method not allowed".
+    ALLOWED_PROXY = {
+        "get_system_stats",
+        "get_volume", "set_volume", "toggle_mute",
+        "get_wifi_state", "play_volume_feedback",
+    }
+
+    def __init__(self, app_id: str, app_dir: Path, system_api: "SystemAPI"):
+        self.app_id = app_id
+        self.app_dir = app_dir
+        self.system_api = system_api
+        self._window = None
+        self._proc: subprocess.Popen | None = None
+        self._pending: dict[int, dict] = {}
+        self._next_id = 1
+        self._io_lock = threading.RLock()
+
+    def attach_window(self, window) -> None:
+        self._window = window
+
+    # ----------------------------------------------------------
+    # Запуск бэкенда
+    # ----------------------------------------------------------
+    def start_backend(self) -> None:
+        backend = self.app_dir / "app_backend.py"
+        if not backend.is_file():
+            return
+
+        env = os.environ.copy()
+        env["SIAMBA_APP_ID"] = self.app_id
+        env["SIAMBA_APP_DIR"] = str(self.app_dir)
+        env["SIAMBA_APP_DATA"] = str(
+            Path.home() / ".local" / "share" / "siamba-os" / "apps" / self.app_id
+        )
+        env["SIAMBA_OS_ROOT"] = str(BASE_DIR)
+        env["PYTHONUNBUFFERED"] = "1"
+
+        self._proc = subprocess.Popen(
+            [sys.executable, str(backend)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1,
+            cwd=str(self.app_dir),
+            env=env,
+            start_new_session=True, close_fds=True,
+        )
+        threading.Thread(target=self._read_stdout, daemon=True).start()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
+
+    def stop_backend(self) -> None:
+        with self._io_lock:
+            proc = self._proc
+            self._proc = None
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try: proc.kill()
+                except Exception: pass
+
+    # ----------------------------------------------------------
+    # Чтение из бэкенда
+    # ----------------------------------------------------------
+    def _read_stdout(self):
+        try:
+            for line in self._proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                self._dispatch(msg)
+        except Exception:
+            pass
+        # Бэкенд умер — закрываем окно приложения
+        self._on_backend_exit()
+
+    def _read_stderr(self):
+        try:
+            for line in self._proc.stderr:
+                print(f"[{self.app_id}] {line.rstrip()}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+    def _dispatch(self, msg: dict):
+        kind = msg.get("type")
+        if kind == "proxy":
+            self._handle_proxy(msg)
+        elif kind == "response":
+            fut = self._pending.pop(msg.get("id"), None)
+            if fut:
+                fut["result"] = msg.get("result")
+                fut["event"].set()
+
+    def _handle_proxy(self, msg: dict):
+        method = msg.get("method")
+        params = msg.get("params") or {}
+        req_id = msg.get("id")
+
+        if method not in self.ALLOWED_PROXY:
+            self._send({"type": "proxy_response", "id": req_id,
+                        "error": f"method not allowed: {method}"})
+            return
+
+        try:
+            fn = getattr(self.system_api, method)
+            result = fn(**params) if isinstance(params, dict) else fn(*params)
+            self._send({"type": "proxy_response", "id": req_id, "result": result})
+        except Exception as e:
+            self._send({"type": "proxy_response", "id": req_id,
+                        "error": f"{type(e).__name__}: {e}"})
+
+    def _send(self, msg: dict):
+        with self._io_lock:
+            proc = self._proc
+            if not proc or proc.poll() is not None:
+                return
+            try:
+                proc.stdin.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                proc.stdin.flush()
+            except Exception:
+                pass
+
+    def _on_backend_exit(self):
+        try:
+            if self._window:
+                self._window.destroy()
+        except Exception:
+            pass
+
+    # ----------------------------------------------------------
+    # Методы, вызываемые из JS приложения через pywebview.api
+    # ----------------------------------------------------------
+    def call(self, method: str, params: dict | None = None):
+        """UI приложения → его бэкенд. Возвращает ответ бэкенда."""
+        if not self._proc or self._proc.poll() is not None:
+            return {"ok": False, "error": "backend not running"}
+
+        with self._io_lock:
+            req_id = self._next_id
+            self._next_id += 1
+
+        evt = threading.Event()
+        fut = {"event": evt, "result": None}
+        self._pending[req_id] = fut
+
+        self._send({"type": "call", "id": req_id,
+                    "method": method, "params": params or {}})
+
+        if not evt.wait(timeout=20):
+            self._pending.pop(req_id, None)
+            return {"ok": False, "error": "backend timeout"}
+        return fut["result"]
+
+    def get_app_info(self):
+        """Метаданные окна — UI может показать имя, версию и т.п."""
+        try:
+            mf = json.loads((self.app_dir / "manifest.json").read_text(encoding="utf-8"))
+        except Exception:
+            mf = {}
+        return {
+            "id":      self.app_id,
+            "name":    mf.get("name", self.app_id),
+            "version": mf.get("version", "0.0.0"),
+        }
+
+    # --- оконные операции для frameless-режима ---
+    def window_move(self, x: int, y: int):
+        if self._window:
+            try: self._window.move(int(x), int(y))
+            except Exception: pass
+        return {"ok": True}
+
+    def window_get_position(self):
+        if not self._window:
+            return {"x": 0, "y": 0}
+        try:
+            return {"x": self._window.x or 0, "y": self._window.y or 0}
+        except Exception:
+            return {"x": 0, "y": 0}
+
+    def window_minimize(self):
+        if self._window:
+            try: self._window.minimize()
+            except Exception: pass
+        return {"ok": True}
+
+    def window_close(self):
+        if self._window:
+            try: self._window.destroy()
+            except Exception: pass
+        return {"ok": True}
+
+
+# ==================================================================
+# AppManager — установка / список / запуск siamba-приложений
+# ==================================================================
+class AppManager:
+    def __init__(self, base_dir: Path, system_api: "SystemAPI"):
+        self.base_dir = base_dir
+        self.apps_dir = base_dir / "apps"
+        self.apps_dir.mkdir(exist_ok=True)
+        self.system_api = system_api
+        self._windows: dict[str, object] = {}
+        self._bridges: dict[str, AppBridge] = {}
+        self._lock = threading.RLock()
+
+    # ----------------------------------------------------------
+    # Установка .sht
+    # ----------------------------------------------------------
+    def install_app(self, package_path: str) -> dict:
+        p = Path(package_path)
+        if not p.is_file():
+            return {"ok": False, "error": "file not found"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            # Безопасная распаковка: никаких ../ и абсолютных путей
+            try:
+                with tarfile.open(p, "r:*") as tar:
+                    for m in tar.getmembers():
+                        target = (tmp_path / m.name).resolve()
+                        if not str(target).startswith(str(tmp_path.resolve())):
+                            return {"ok": False, "error": f"unsafe path: {m.name}"}
+                    tar.extractall(tmp_path)
+            except tarfile.TarError as e:
+                return {"ok": False, "error": f"bad archive: {e}"}
+
+            manifests = sorted(tmp_path.rglob("manifest.json"),
+                               key=lambda x: len(x.parts))
+            if not manifests:
+                return {"ok": False, "error": "manifest.json not found"}
+
+            manifest_path = manifests[0]
+            app_root = manifest_path.parent
+
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                return {"ok": False, "error": f"bad manifest: {e}"}
+
+            app_id = (manifest.get("id") or "").strip()
+            if not re.match(r"^[a-z0-9_\-]{2,64}$", app_id):
+                return {"ok": False, "error": "invalid id (a-z 0-9 _ -, 2..64)"}
+
+            for key in ("name", "version"):
+                if not manifest.get(key):
+                    return {"ok": False, "error": f"manifest missing '{key}'"}
+
+            target = self.apps_dir / app_id
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.move(str(app_root), str(target))
+
+        return {"ok": True, "app_id": app_id, "manifest": manifest}
+
+    # ----------------------------------------------------------
+    # Список установленных
+    # ----------------------------------------------------------
+    def list_apps(self) -> list:
+        out = []
+        for entry in sorted(self.apps_dir.iterdir()):
+            if not entry.is_dir():
+                continue
+            mf_path = entry / "manifest.json"
+            if not mf_path.is_file():
+                continue
+            try:
+                mf = json.loads(mf_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+            app_id = mf.get("id") or entry.name
+
+            icon_url = None
+            icon = mf.get("icon")
+            if icon:
+                icon_file = entry / icon
+                if icon_file.is_file():
+                    icon_url = icon_file.as_uri()
+
+            out.append({
+                "id":           app_id,
+                "kind":         "siamba",
+                "bin":          f"siamba:{app_id}",       # ключ состояния
+                "name":         mf.get("name", app_id),
+                "version":      mf.get("version", "0.0.0"),
+                "description":  mf.get("description", ""),
+                "author":       mf.get("author", ""),
+                "icon_path":    icon_url,
+                "has_backend":  (entry / "app_backend.py").is_file(),
+                "has_ui":       (entry / "ui" / "index.html").is_file(),
+            })
+        return out
+
+    # ----------------------------------------------------------
+    # Запуск приложения в отдельном окне
+    # ----------------------------------------------------------
+    def launch_my_app(self, app_id: str) -> dict:
+        with self._lock:
+            if app_id in self._windows:
+                try:
+                    self._windows[app_id].show()
+                    self._windows[app_id].restore()
+                except Exception:
+                    pass
+                return {"ok": True, "focused": True}
+
+        app_dir = self.apps_dir / app_id
+        if not app_dir.is_dir():
+            return {"ok": False, "error": "app not installed"}
+
+        manifest_path = app_dir / "manifest.json"
+        ui_index      = app_dir / "ui" / "index.html"
+        if not ui_index.is_file():
+            return {"ok": False, "error": "ui/index.html missing"}
+
+        try:
+            mf = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            return {"ok": False, "error": f"bad manifest: {e}"}
+
+        win_cfg = mf.get("window") or {}
+
+        bridge = AppBridge(app_id, app_dir, self.system_api)
+        bridge.start_backend()
+
+        try:
+            window = webview.create_window(
+                title      = mf.get("name", app_id),
+                url        = ui_index.as_uri(),
+                js_api     = bridge,
+                width      = int(win_cfg.get("width", 900)),
+                height     = int(win_cfg.get("height", 600)),
+                x          = win_cfg.get("x"),
+                y          = win_cfg.get("y"),
+                min_size   = (420, 320),
+                frameless  = True,
+                background_color = win_cfg.get("background", "#14141c"),
+            )
+        except Exception as e:
+            bridge.stop_backend()
+            return {"ok": False, "error": str(e)}
+
+        bridge.attach_window(window)
+
+        key = f"siamba:{app_id}"
+
+        def on_closed():
+            with self._lock:
+                self._windows.pop(app_id, None)
+                self._bridges.pop(app_id, None)
+            self.system_api._unregister_siamba_app(key)
+            bridge.stop_backend()
+
+        try:
+            window.events.closed += on_closed
+        except Exception:
+            pass
+
+        with self._lock:
+            self._windows[app_id] = window
+            self._bridges[app_id] = bridge
+
+        self.system_api._register_siamba_app(key, window)
+        return {"ok": True, "app_id": app_id, "key": key}
+
+    # ----------------------------------------------------------
+    # Удаление
+    # ----------------------------------------------------------
+    def uninstall_app(self, app_id: str) -> dict:
+        with self._lock:
+            if app_id in self._windows:
+                return {"ok": False, "error": "app is running"}
+        target = self.apps_dir / app_id
+        if not target.is_dir():
+            return {"ok": False, "error": "not installed"}
+        try:
+            shutil.rmtree(target)
+            return {"ok": True}
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
 
 # ==================================================================
 # Точка входа
@@ -573,13 +1014,17 @@ def main() -> int:
         return 1
 
     api = SystemAPI()
+    app_manager = AppManager(BASE_DIR, api)
+    api.set_app_manager(app_manager)
+
     webview.create_window(
         title=WINDOW_TITLE,
         url=UI_INDEX.as_uri(),
         js_api=api,
-        width=1280, height=720,
+        width=1920, height=1080,
         fullscreen=not DEV_MODE,
         min_size=(800, 480),
+        frameless=True,
     )
     webview.start(debug=DEVTOOLS)
     return 0

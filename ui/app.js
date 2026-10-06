@@ -80,6 +80,8 @@
     active:   null,
     allApps:  [],       // из scan_linux_apps()
     dock:     [],       // список bin из конфига
+    linuxApps:  [],    // ← новое
+    siambaApps: [],    // ← новое
     appsReady: false,
   };
 
@@ -221,6 +223,22 @@
      7. Рендер дока
      ================================================================ */
   function buildDockIconContent(bin) {
+    // siamba:?
+  if (bin.startsWith('siamba:')) {
+    const app = state.siambaApps.find(a => `siamba:${a.id}` === bin);
+    if (app && app.icon_path) {
+      return {
+        style: 'background: rgba(255,255,255,0.06);',
+        inner: `<img src="${escapeAttr(app.icon_path)}" alt="">`,
+      };
+    }
+    const letter = (app ? app.name : bin.replace('siamba:', ''))
+                     .trim().charAt(0).toUpperCase();
+    return {
+      style: 'background: linear-gradient(135deg, #7dd3fc, #c084fc); color:#0a0a14; font-weight:700; font-size:22px;',
+      inner: letter,
+    };
+  }
     const reg = DOCK_REGISTRY[bin];
     if (reg) {
       return {
@@ -386,32 +404,54 @@
   /* ================================================================
      9. Запуск / фокус
      ================================================================ */
-  async function launchOrFocus(bin, execCmd) {
-    if (state.running.has(bin)) {
-      state.active = bin;
-      refreshActiveName();
+  async function launchMyApp(app) {
+  const a = api();
+  if (!a || typeof a.launch_my_app !== 'function') {
+    showToast('Бэкенд не поддерживает запуск приложений');
+    return;
+  }
+  try {
+    const res = await a.launch_my_app(app.id);
+    if (!res || !res.ok) {
+      showToast(`Не удалось запустить ${app.name}: ${res && res.error || '?'}`);
       return;
     }
-
-    const a = api();
-    if (a && typeof a.launch_app === 'function') {
-      try {
-        const res = await a.launch_app(bin, execCmd);
-        if (!res || !res.ok) {
-          showToast(`Не удалось запустить ${displayNameFor(bin)}: ${res && res.error || '?'}`);
-          return;
-        }
-        state.active = bin;
-        await pollRunning();
-      } catch (err) {
-        showToast(`Ошибка запуска: ${err}`);
-      }
-    } else {
-      console.log('[SIamba OS] launch →', bin, execCmd);
-      const s = new Set(state.running); s.add(bin);
-      applyRunningSet(s);
-    }
+    // Оптимистично помечаем запущенным
+    const s = new Set(state.running);
+    s.add(app.bin || `siamba:${app.id}`);
+    applyRunningSet(s);
+  } catch (e) {
+    showToast(`Ошибка запуска: ${e}`);
   }
+}
+
+async function launchOrFocus(bin, execCmd) {
+  // siamba-приложение?
+  if (bin && bin.startsWith('siamba:')) {
+    const app = state.siambaApps.find(a => a.bin === bin || `siamba:${a.id}` === bin);
+    if (app) return launchMyApp(app);
+    return;
+  }
+
+  // ... существующая логика для Linux-приложений ниже ...
+  if (state.running.has(bin)) {
+    state.active = bin;
+    refreshActiveName();
+    return;
+  }
+  const a = api();
+  if (a && typeof a.launch_app === 'function') {
+    try {
+      const res = await a.launch_app(bin, execCmd);
+      if (!res || !res.ok) {
+        showToast(`Не удалось запустить ${displayNameFor(bin)}: ${res && res.error || '?'}`);
+        return;
+      }
+      state.active = bin;
+      await pollRunning();
+    } catch (err) { showToast(`Ошибка запуска: ${err}`); }
+  }
+}
 
   /* ================================================================
      10. Popovers
@@ -825,47 +865,52 @@
   }
 
   function renderLaunchpad() {
-    el.launchpadGrid.innerHTML = '';
+  el.launchpadGrid.innerHTML = '';
 
-    const apps = state.allApps.slice(0, LAUNCHPAD_LIMIT);
-    if (!apps.length) {
-      el.launchpadGrid.innerHTML =
-        '<div class="launchpad-empty">Список приложений пуст</div>';
-      return;
-    }
-
-    const frag = document.createDocumentFragment();
-    apps.forEach(app => {
-      const bin = app.bin || app.id;
-      const inDock = state.dock.includes(bin);
-
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'launchpad-app';
-      b.title = app.comment || app.name;
-      b.innerHTML = `
-        ${buildLaunchpadIconContent(app)}
-        <span class="launchpad-name">${escapeHtml(app.name)}</span>`;
-
-      b.addEventListener('click', () => {
-        closeLaunchpad();
-        launchOrFocus(bin, app.exec);
-      });
-      b.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const items = inDock
-          ? [{ label: 'Убрать из дока', danger: true,
-               action: () => removeFromDock(bin).then(renderLaunchpad) }]
-          : [{ label: 'Добавить в док',
-               action: () => addToDock(bin).then(renderLaunchpad) }];
-        showContextMenu(e.clientX, e.clientY, items);
-      });
-
-      frag.appendChild(b);
-    });
-    el.launchpadGrid.appendChild(frag);
+  // Только собственные приложения. Linux-нативные скрыты.
+  const apps = state.siambaApps;
+  if (!apps.length) {
+    el.launchpadGrid.innerHTML =
+      '<div class="launchpad-empty">Пока не установлено ни одного приложения</div>';
+    return;
   }
+
+  const frag = document.createDocumentFragment();
+  apps.forEach(app => {
+    const key = app.bin || `siamba:${app.id}`;
+    const inDock = state.dock.includes(key);
+
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'launchpad-app';
+    b.title = app.description || app.name;
+
+    let iconHtml;
+    if (app.icon_path) {
+      iconHtml = `<div class="launchpad-icon"><img src="${escapeAttr(app.icon_path)}" alt=""></div>`;
+    } else {
+      const letter = (app.name || '?').trim().charAt(0).toUpperCase();
+      iconHtml = `<div class="launchpad-icon launchpad-icon-fallback">${escapeHtml(letter)}</div>`;
+    }
+    b.innerHTML = `${iconHtml}<span class="launchpad-name">${escapeHtml(app.name)}</span>`;
+
+    b.addEventListener('click', () => {
+      closeLaunchpad();
+      launchMyApp(app);
+    });
+    b.addEventListener('contextmenu', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const items = inDock
+        ? [{ label: 'Убрать из дока', danger: true,
+             action: () => removeFromDock(key).then(renderLaunchpad) }]
+        : [{ label: 'Добавить в док',
+             action: () => addToDock(key).then(renderLaunchpad) }];
+      showContextMenu(e.clientX, e.clientY, items);
+    });
+    frag.appendChild(b);
+  });
+  el.launchpadGrid.appendChild(frag);
+}
 
   function openLaunchpad() {
     renderLaunchpad();
@@ -937,67 +982,92 @@
      17. Инициализация
      ================================================================ */
   async function loadAppsAndDock() {
-    const a = api();
+  const a = api();
 
-    // Список приложений
-    if (a && typeof a.scan_linux_apps === 'function') {
-      try {
-        const list = await a.scan_linux_apps();
-        state.allApps = Array.isArray(list) ? list : [];
-      } catch (e) {
-        state.allApps = [];
-        showToast('Не удалось получить список приложений');
-      }
-    } else {
-      // Дев-заглушка для открытия index.html без pywebview
-      state.allApps = [
-        { id: 'firefox',            name: 'Firefox',            exec: 'firefox',              bin: 'firefox',              comment: 'Веб-браузер' },
-        { id: 'gnome-terminal',     name: 'Терминал',           exec: 'gnome-terminal',       bin: 'gnome-terminal',       comment: 'Эмулятор терминала' },
-        { id: 'xed',                name: 'Текстовый редактор', exec: 'xed',                  bin: 'xed',                  comment: 'Простой редактор' },
-        { id: 'nautilus',           name: 'Файлы',              exec: 'nautilus',             bin: 'nautilus',             comment: 'Файловый менеджер' },
-        { id: 'gnome-control-center', name: 'Настройки',        exec: 'gnome-control-center', bin: 'gnome-control-center', comment: 'Параметры системы' },
-        { id: 'eog',                name: 'Просмотр изображений', exec: 'eog',                bin: 'eog',                  comment: 'Image Viewer' },
-      ];
-    }
-    state.appsReady = true;
-
-    // Конфиг дока
-    let dock = null;
-    if (a && typeof a.get_dock_config === 'function') {
-      try { dock = await a.get_dock_config(); } catch {}
-    }
-    if (!Array.isArray(dock) || !dock.length) {
-      dock = ['xed', 'gnome-terminal', 'firefox', 'thunderbird', 'rhythmbox',
-              'eog', 'gnome-calendar', 'gnome-control-center', 'nautilus'];
-    }
-    state.dock = dock;
-
-    renderDock();
-    applyRunningSet(state.running);
-    refreshActiveName();
-
-    if (spot.isOpen) renderSpotlightResults();
-    if (el.launchpad.classList.contains('show')) renderLaunchpad();
+  // --- SIAMBA apps (для Launchpad) ---
+  if (a && typeof a.list_my_apps === 'function') {
+    try {
+      const list = await a.list_my_apps();
+      state.siambaApps = Array.isArray(list) ? list : [];
+    } catch { state.siambaApps = []; }
+  } else {
+    // dev-заглушка для браузера
+    state.siambaApps = [
+      { id: 'hello_app', bin: 'siamba:hello_app', kind: 'siamba',
+        name: 'Hello', description: 'Приветствие и прокси-мост', icon_path: null },
+      { id: 'notes_app', bin: 'siamba:notes_app', kind: 'siamba',
+        name: 'Заметки', description: 'Простые заметки', icon_path: null },
+    ];
   }
 
-  el.dock.addEventListener('mousemove', e => updateDock(e.clientX));
-  el.dock.addEventListener('mouseleave', resetDock);
+  // --- Linux apps (нужны для dock lookup, но в Launchpad не показываем) ---
+  if (a && typeof a.scan_linux_apps === 'function') {
+    try {
+      const list = await a.scan_linux_apps();
+      state.linuxApps = Array.isArray(list) ? list : [];
+    } catch { state.linuxApps = []; }
+  } else {
+    state.linuxApps = [];
+  }
+  state.allApps = [...state.linuxApps, ...state.siambaApps];
+  state.appsReady = true;
 
+  // --- Конфиг дока ---
+  let dock = null;
+  if (a && typeof a.get_dock_config === 'function') {
+    try { dock = await a.get_dock_config(); } catch {}
+  }
+  if (!Array.isArray(dock) || !dock.length) {
+    dock = ['xed', 'gnome-terminal', 'firefox', 'thunderbird', 'rhythmbox',
+            'eog', 'gnome-calendar', 'gnome-control-center', 'nautilus'];
+  }
+  state.dock = dock;
+
+  renderDock();
+  applyRunningSet(state.running);
+  refreshActiveName();
+
+    if (spot.isOpen) renderSpotlightResults();
+  if (el.launchpad && el.launchpad.classList.contains('show')) renderLaunchpad();
+  }
+
+  /* ================================================================
+     18. ЗАПУСК
+     Всё, что вызывается при загрузке страницы.
+     ВАЖНО: часы и батарея — первыми. Даже если ниже что-то упадёт,
+     они уже будут работать.
+     ================================================================ */
+
+  // --- Часы и батарея: независимы от бэкенда и DOM-элементов дока ---
   updateClock();
   setInterval(updateClock, 1000);
   setBattery(78);
 
-  window.addEventListener('pywebviewready', () => {
-    loadAppsAndDock().then(() => {
-      pollRunning();
-      setInterval(pollRunning, POLL_MS);
-    });
-  });
+  // --- Подключаем magnification к доку ---
+  if (el.dock) {
+    el.dock.addEventListener('mousemove', e => updateDock(e.clientX));
+    el.dock.addEventListener('mouseleave', resetDock);
+  }
 
-  // Dev-режим в браузере — pywebviewready не придёт
-  if (!window.pywebview) {
-    setTimeout(() => {
-      if (!state.appsReady) loadAppsAndDock();
-    }, 200);
+  // --- Асинхронная инициализация приложений и дока ---
+  async function bootstrap() {
+    try {
+      await loadAppsAndDock();
+    } catch (e) {
+      console.error('[SIamba OS] loadAppsAndDock failed:', e);
+    }
+    try {
+      await pollRunning();
+      setInterval(pollRunning, POLL_MS);
+    } catch (e) {
+      console.error('[SIamba OS] pollRunning failed:', e);
+    }
+  }
+
+  if (window.pywebview) {
+    window.addEventListener('pywebviewready', bootstrap);
+  } else {
+    // Открыто в браузере без pywebview — работаем на dev-заглушках
+    bootstrap();
   }
 })();

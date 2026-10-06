@@ -1,0 +1,13 @@
+{
+  "id": "hello_app",
+  "name": "Hello",
+  "version": "1.0.0",
+  "description": "Приветствие и системные метрики через прокси-мост",
+  "author": "SIamba Team",
+  "icon": "icon.svg",
+  "window": {
+    "width": 720,
+    "height": 520,
+    "background": "#14141c"
+  }
+}

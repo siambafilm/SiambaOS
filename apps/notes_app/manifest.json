@@ -1,0 +1,13 @@
+{
+  "id": "notes_app",
+  "name": "Заметки",
+  "version": "1.0.0",
+  "description": "Простые заметки с сохранением на диск",
+  "author": "SIamba Team",
+  "icon": "icon.svg",
+  "window": {
+    "width": 820,
+    "height": 560,
+    "background": "#14141c"
+  }
+}

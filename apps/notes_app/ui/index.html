@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Заметки</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="titlebar" id="titlebar">
+    <div class="traffic">
+      <button class="traffic-btn close"    data-act="close"></button>
+      <button class="traffic-btn minimize" data-act="minimize"></button>
+      <button class="traffic-btn zoom"     data-act="zoom"></button>
+    </div>
+    <div class="titlebar-title">Заметки</div>
+    <div class="titlebar-right"></div>
+  </header>
+
+  <main class="body">
+    <div class="composer">
+      <input type="text" id="new-note" placeholder="Новая заметка…">
+      <button class="btn" id="add">Добавить</button>
+    </div>
+    <ul class="notes" id="notes"></ul>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

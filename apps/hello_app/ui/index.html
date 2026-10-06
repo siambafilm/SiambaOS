@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Hello</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="titlebar" id="titlebar">
+    <div class="traffic">
+      <button class="traffic-btn close"    data-act="close"    title="Закрыть"></button>
+      <button class="traffic-btn minimize" data-act="minimize" title="Свернуть"></button>
+      <button class="traffic-btn zoom"     data-act="zoom"     title="Развернуть"></button>
+    </div>
+    <div class="titlebar-title" id="app-title">Hello</div>
+    <div class="titlebar-right"></div>
+  </header>
+
+  <main class="body">
+    <h1 id="greeting">…</h1>
+    <p class="sub">SIamba App · прокси-мост в действии</p>
+
+    <section class="card">
+      <h2>Система</h2>
+      <pre id="stats">—</pre>
+      <button class="btn" id="refresh">Обновить</button>
+    </section>
+
+    <section class="card">
+      <h2>Поздороваться</h2>
+      <div class="row">
+        <input type="text" id="name" value="мир">
+        <button class="btn" id="greet">Сказать</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

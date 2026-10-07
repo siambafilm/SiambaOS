@@ -1080,6 +1080,37 @@
     e.preventDefault();
   });
 
+    /* ================================================================
+     16.5. Синхронизация системной темы и обоев
+     ================================================================
+     Settings пишет theme.json, но не может пушнуть событие в главное окно.
+     Самое надёжное — периодически читать get_theme() и применять изменения.
+     ================================================================ */
+  let _lastTheme     = null;
+  let _lastWallpaper = null;
+
+  async function syncSystemTheme() {
+    const a = api();
+    if (!a || typeof a.get_theme !== 'function') return;
+
+    let res;
+    try { res = await a.get_theme(); }
+    catch { return; }
+    if (!res) return;
+
+    const t = res.theme     || 'dark';
+    const w = res.wallpaper || 'aurora';
+
+    if (t !== _lastTheme) {
+      document.body.dataset.theme = t;
+      _lastTheme = t;
+    }
+    if (w !== _lastWallpaper) {
+      document.body.dataset.wallpaper = w;
+      _lastWallpaper = w;
+    }
+  }
+
   /* ================================================================
      17. Инициализация
      ================================================================ */
@@ -1164,6 +1195,8 @@
 
   // --- Асинхронная инициализация приложений и дока ---
   async function bootstrap() {
+    try { await syncSystemTheme(); } catch {}
+    setInterval(syncSystemTheme, 1500);
     try {
       await loadAppsAndDock();
     } catch (e) {

@@ -641,6 +641,10 @@ class AppBridge:
         "get_system_stats",
         "get_volume", "set_volume", "toggle_mute",
         "get_wifi_state", "play_volume_feedback",
+        # --- новое ---
+        "get_users", "create_user", "delete_user", "update_user",
+        "authenticate_user",
+        "get_theme", "set_theme",
     }
 
     def __init__(self, app_id: str, app_dir: Path, system_api: "SystemAPI"):
@@ -1029,6 +1033,279 @@ class AppManager:
             return {"ok": True}
         except OSError as e:
             return {"ok": False, "error": str(e)}
+
+        # ------------------------------------------------------------------
+        # Виртуальные пользователи SIamba (изолированы от Linux)
+        # ------------------------------------------------------------------
+        #
+        # Хранятся в BASE_DIR / "users" / "<username>". Никаких useradd/userdel —
+        # это чисто SIamba-сущности, у них своя иерархия папок и свой профиль.
+        #
+        # Структура:
+        #   users/
+        #     <username>/
+        #       profile.json    — name, display_name, password_hash, avatar, created
+        #       home/           — «домашняя папка» юзера (для будущих apps)
+        #       settings.json   — тема, обои и прочие преференсы
+
+        USERNAME_RE = re.compile(r"^[a-z][a-z0-9_\-]{1,31}$")
+
+        @property
+        def _users_root(self) -> Path:
+            return Path(__file__).resolve().parent / "users"
+
+        @staticmethod
+        def _hash_password(password: str, salt: bytes | None = None) -> str:
+            """
+            PBKDF2-HMAC-SHA256, 200k итераций, соль 16 байт.
+            Формат строки: pbkdf2_sha256$<iters>$<salt_hex>$<hash_hex>
+            Без внешних зависимостей — только stdlib.
+            """
+            import hashlib
+            import hmac
+            import secrets
+
+            if salt is None:
+                salt = secrets.token_bytes(16)
+            iterations = 200_000
+            dk = hashlib.pbkdf2_hmac(
+                "sha256", password.encode("utf-8"), salt, iterations
+            )
+            return f"pbkdf2_sha256${iterations}${salt.hex()}${dk.hex()}"
+
+        @staticmethod
+        def _verify_password(password: str, stored: str) -> bool:
+            import hashlib
+            import hmac
+
+            try:
+                algo, iters, salt_hex, hash_hex = stored.split("$")
+                if algo != "pbkdf2_sha256":
+                    return False
+                dk = hashlib.pbkdf2_hmac(
+                    "sha256",
+                    password.encode("utf-8"),
+                    bytes.fromhex(salt_hex),
+                    int(iters),
+                )
+                return hmac.compare_digest(dk.hex(), hash_hex)
+            except Exception:
+                return False
+
+        def _user_dir(self, username: str) -> Path:
+            return self._users_root / username
+
+        def get_users(self) -> list[dict]:
+            """
+            Возвращает список виртуальных пользователей SIamba.
+            Пароли (даже хэши) наружу не отдаём — только метаданные.
+            """
+            root = self._users_root
+            if not root.is_dir():
+                return []
+
+            out: list[dict] = []
+            for entry in sorted(root.iterdir()):
+                if not entry.is_dir():
+                    continue
+                profile = entry / "profile.json"
+                if not profile.is_file():
+                    continue
+                try:
+                    data = _read_json(profile)
+                except Exception:
+                    continue
+
+                out.append({
+                    "username":     entry.name,
+                    "display_name": data.get("display_name") or entry.name,
+                    "avatar":       data.get("avatar"),  # путь или None
+                    "created":      data.get("created"),
+                })
+            return out
+
+        def create_user(self, username: str, password: str,
+                        display_name: str | None = None) -> dict:
+            """
+            Создаёт нового виртуального юзера.
+
+            Иерархия:
+                users/<username>/
+                    profile.json
+                    settings.json
+                    home/
+            """
+            if not isinstance(username, str) or not self.USERNAME_RE.match(username):
+                return {"ok": False,
+                        "error": "invalid username (a-z, 0-9, _, -, 2..32)"}
+
+            if not isinstance(password, str) or len(password) < 4:
+                return {"ok": False, "error": "password too short (min 4)"}
+
+            user_dir = self._user_dir(username)
+            if user_dir.exists():
+                return {"ok": False, "error": "user already exists"}
+
+            try:
+                (user_dir / "home").mkdir(parents=True, exist_ok=False)
+            except OSError as e:
+                return {"ok": False, "error": f"mkdir failed: {e}"}
+
+            try:
+                profile = {
+                    "username":      username,
+                    "display_name":  (display_name or username).strip(),
+                    "password_hash": self._hash_password(password),
+                    "avatar":        None,
+                    "created":       time.strftime("%Y-%m-%dT%H:%M:%S"),
+                }
+                settings = {
+                    "theme":      "dark",   # "dark" | "light"
+                    "wallpaper":  "aurora", # id обоев
+                    "locale":     "ru-RU",
+                }
+                (user_dir / "profile.json").write_text(
+                    json.dumps(profile, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                (user_dir / "settings.json").write_text(
+                    json.dumps(settings, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError as e:
+                # откатываем создание, чтобы не оставлять мусор
+                shutil.rmtree(user_dir, ignore_errors=True)
+                return {"ok": False, "error": f"write failed: {e}"}
+
+            _log(f"user created: {username}")
+            return {"ok": True, "username": username}
+
+        def delete_user(self, username: str) -> dict:
+            """
+            Удаляет виртуального юзера вместе со всей его иерархией.
+            """
+            if not isinstance(username, str) or not username:
+                return {"ok": False, "error": "empty username"}
+
+            user_dir = self._user_dir(username)
+            if not user_dir.is_dir():
+                return {"ok": False, "error": "user not found"}
+
+            # Защита: не даём случайно удалить сам корень users/
+            try:
+                if user_dir.resolve() == self._users_root.resolve():
+                    return {"ok": False, "error": "refusing to delete users root"}
+            except Exception:
+                pass
+
+            try:
+                shutil.rmtree(user_dir)
+            except OSError as e:
+                return {"ok": False, "error": f"rmtree failed: {e}"}
+
+            _log(f"user deleted: {username}")
+            return {"ok": True}
+
+        def update_user(self, username: str, *,
+                        display_name: str | None = None,
+                        password: str | None = None) -> dict:
+            """
+            Меняет отображаемое имя и/или пароль виртуального юзера.
+            Хэш пароля наружу не отдаём никогда.
+            """
+            if not isinstance(username, str) or not username:
+                return {"ok": False, "error": "empty username"}
+
+            profile_path = self._user_dir(username) / "profile.json"
+            if not profile_path.is_file():
+                return {"ok": False, "error": "user not found"}
+
+            try:
+                profile = _read_json(profile_path)
+            except Exception as e:
+                return {"ok": False, "error": f"read failed: {e}"}
+
+            if display_name is not None:
+                dn = str(display_name).strip()
+                if not dn:
+                    return {"ok": False, "error": "empty display_name"}
+                profile["display_name"] = dn
+
+            if password is not None:
+                if len(password) < 4:
+                    return {"ok": False, "error": "password too short (min 4)"}
+                profile["password_hash"] = self._hash_password(password)
+
+            try:
+                profile_path.write_text(
+                    json.dumps(profile, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError as e:
+                return {"ok": False, "error": f"write failed: {e}"}
+
+            return {"ok": True}
+
+        def authenticate_user(self, username: str, password: str) -> dict:
+            """
+            Проверка пары логин/пароль. Нужна для будущего логин-скрина.
+            Сейчас используется в Settings для подтверждения смены пароля.
+            """
+            profile_path = self._user_dir(username) / "profile.json"
+            if not profile_path.is_file():
+                return {"ok": False, "error": "user not found"}
+            try:
+                profile = _read_json(profile_path)
+            except Exception as e:
+                return {"ok": False, "error": f"read failed: {e}"}
+
+            stored = profile.get("password_hash", "")
+            if self._verify_password(password, stored):
+                return {"ok": True}
+            return {"ok": False, "error": "wrong password"}
+
+        # ------------------------------------------------------------------
+        # Тема и обои (на уровне системы)
+        # ------------------------------------------------------------------
+        #
+        # Профиль темы хранится отдельно от юзеров — это «системная» настройка
+        # главного окна. Settings_app дёргает эти методы через proxy.
+
+        @property
+        def _theme_config_path(self) -> Path:
+            return Path(__file__).resolve().parent / "theme.json"
+
+        def get_theme(self) -> dict:
+            default = {
+                "theme":     "dark",      # "dark" | "light"
+                "wallpaper": "aurora",    # id обоев
+            }
+            try:
+                if self._theme_config_path.exists():
+                    data = _read_json(self._theme_config_path)
+                    if isinstance(data, dict):
+                        default.update({k: v for k, v in data.items()
+                                        if k in ("theme", "wallpaper")})
+            except Exception as e:
+                _log(f"theme config read failed: {type(e).__name__}: {e}")
+            return default
+
+        def set_theme(self, theme: str | None = None,
+                    wallpaper: str | None = None) -> dict:
+            cur = self.get_theme()
+            if theme in ("dark", "light"):
+                cur["theme"] = theme
+            if isinstance(wallpaper, str) and wallpaper:
+                cur["wallpaper"] = wallpaper
+
+            try:
+                self._theme_config_path.write_text(
+                    json.dumps(cur, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError as e:
+                return {"ok": False, "error": str(e)}
+            return {"ok": True, **cur}
 
 
 # ==================================================================

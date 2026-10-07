@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Настройки</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-theme="dark">
+
+  <div class="titlebar" id="titlebar">
+    <div class="tb-left">
+      <span class="tb-dot tb-close"    id="btn-close"></span>
+      <span class="tb-dot tb-minimize" id="btn-min"></span>
+      <span class="tb-dot tb-zoom"     id="btn-zoom" title="—"></span>
+    </div>
+    <div class="tb-title">Настройки</div>
+    <div class="tb-right"></div>
+  </div>
+
+  <div class="window">
+    <!-- ============ SIDEBAR ============ -->
+    <aside class="sidebar">
+      <div class="search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="11" cy="11" r="7"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input type="text" id="settings-search" placeholder="Поиск">
+      </div>
+
+      <nav class="nav" id="nav">
+        <button class="nav-item" data-page="accounts">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+              <circle cx="12" cy="7" r="4"/>
+            </svg>
+          </span>
+          <span class="nav-label">Учётные записи</span>
+        </button>
+
+        <button class="nav-item" data-page="network">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round">
+              <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+              <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+              <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+              <circle cx="12" cy="20" r="0.9" fill="currentColor"/>
+            </svg>
+          </span>
+          <span class="nav-label">Сеть</span>
+        </button>
+
+        <button class="nav-item" data-page="display">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2"/>
+              <line x1="8" y1="21" x2="16" y2="21"/>
+              <line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+          </span>
+          <span class="nav-label">Дисплей</span>
+        </button>
+
+        <button class="nav-item" data-page="appearance">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                 stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 2a10 10 0 0 0 0 20 6 6 0 0 1 0-20z"/>
+            </svg>
+          </span>
+          <span class="nav-label">Оформление</span>
+        </button>
+      </nav>
+    </aside>
+
+    <!-- ============ CONTENT ============ -->
+    <main class="content" id="content">
+
+      <!-- ============ ACCOUNTS ============ -->
+      <section class="page" data-page="accounts" hidden>
+        <div id="accounts-empty" class="empty-state" hidden>
+          <div class="empty-icon">
+            <svg width="72" height="72" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="1.4"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+              <circle cx="12" cy="7" r="4"/>
+            </svg>
+          </div>
+          <h1>Добро пожаловать в SIamba OS</h1>
+          <p>Пока нет ни одного пользователя. Создайте первого,
+             чтобы начать работу.</p>
+          <button class="btn primary" id="empty-create-btn">
+            Создать пользователя
+          </button>
+        </div>
+
+        <div id="accounts-main" hidden>
+          <header class="page-header">
+            <h1>Учётные записи</h1>
+            <button class="btn primary" id="add-user-btn">
+              + Добавить пользователя
+            </button>
+          </header>
+          <div class="user-list" id="user-list"></div>
+        </div>
+      </section>
+
+      <!-- ============ NETWORK ============ -->
+      <section class="page" data-page="network" hidden>
+        <header class="page-header"><h1>Сеть</h1></header>
+        <div class="card">
+          <div class="card-row">
+            <span>Wi-Fi</span>
+            <span class="muted" id="network-status">—</span>
+          </div>
+          <div class="card-hint">
+            Управление Wi-Fi доступно из меню-бара рабочего стола.
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ DISPLAY ============ -->
+      <section class="page" data-page="display" hidden>
+        <header class="page-header"><h1>Дисплей</h1></header>
+        <div class="card">
+          <div class="card-row">
+            <span>Разрешение</span>
+            <span class="muted">System-managed</span>
+          </div>
+          <div class="card-row">
+            <span>Масштаб дока</span>
+            <span class="muted">Normal</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ APPEARANCE ============ -->
+      <section class="page" data-page="appearance" hidden>
+        <header class="page-header"><h1>Оформление</h1></header>
+
+        <div class="card">
+          <div class="card-title">Тема</div>
+          <div class="theme-picker">
+            <button class="theme-card" data-theme="dark">
+              <div class="theme-preview theme-preview-dark"></div>
+              <span>Тёмная</span>
+            </button>
+            <button class="theme-card" data-theme="light">
+              <div class="theme-preview theme-preview-light"></div>
+              <span>Светлая</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Обои</div>
+          <div class="wallpaper-picker" id="wallpaper-picker">
+            <button class="wp-card" data-wallpaper="aurora">
+              <div class="wp-preview wp-aurora"></div>
+              <span>Aurora</span>
+            </button>
+            <button class="wp-card" data-wallpaper="sunset">
+              <div class="wp-preview wp-sunset"></div>
+              <span>Sunset</span>
+            </button>
+            <button class="wp-card" data-wallpaper="mono">
+              <div class="wp-preview wp-mono"></div>
+              <span>Mono</span>
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ============ MODAL ============ -->
+  <div class="modal-overlay" id="modal-overlay" hidden>
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h2 id="modal-title">Новый пользователь</h2>
+        <button class="modal-close" id="modal-close" type="button">×</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

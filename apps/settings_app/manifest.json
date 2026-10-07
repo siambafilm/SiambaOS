@@ -1,0 +1,13 @@
+{
+  "id": "settings_app",
+  "name": "Настройки",
+  "version": "1.0.0",
+  "description": "Системные настройки SIamba OS",
+  "author": "SIamba",
+  "icon": "icon.svg",
+  "window": {
+    "width": 980,
+    "height": 640,
+    "background": "#14141c"
+  }
+}

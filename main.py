@@ -22,7 +22,7 @@ from pathlib import Path
 import webview
 
 DEV_MODE     = True
-DEVTOOLS = False
+DEVTOOLS     = True
 WINDOW_TITLE = "SIamba OS"
 BASE_DIR     = Path(__file__).resolve().parent
 UI_INDEX     = BASE_DIR / "ui" / "index.html"
@@ -36,20 +36,36 @@ def _log(*args):
     print("[SIamba OS]", *args, file=sys.stderr, flush=True)
 
 
+def _read_json(path: Path):
+    """
+    Читает JSON с поддержкой UTF-8 BOM (utf-8-sig корректно съедает BOM,
+    если он есть, и работает как обычный utf-8, если его нет).
+    """
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
 # ==================================================================
 # SystemAPI
 # ==================================================================
 class SystemAPI:
+    DEFAULT_DOCK = [
+        "xed", "gnome-terminal", "firefox", "thunderbird", "rhythmbox",
+        "eog", "gnome-calendar", "gnome-control-center", "nautilus",
+    ]
+
     def __init__(self):
         self._apps: dict[str, dict] = {}
         self._lock = threading.RLock()
         self._apps_cache: tuple[float, list[dict]] | None = None
         self._apps_cache_ttl = 60.0   # сек
-        self._dock_config_path = Path.home() / ".config" / "siamba-os" / "dock.json"
-        threading.Thread(target=self._watch_loop, daemon=True).start()
-            # --- новое ---
-        self._siamba_apps: dict[str, object] = {}     # "siamba:<id>" -> window
-        self._app_manager = None                       # AppManager
+        self._dock_config_path = Path(__file__).resolve().parent / "dock.json"
+
+        # siamba-приложения и их менеджер — ДО запуска watcher-треда,
+        # чтобы к моменту первого тика атрибуты уже существовали.
+        self._siamba_apps: dict[str, object] = {}
+        self._app_manager = None
+
+        # Один watcher, не два.
         threading.Thread(target=self._watch_loop, daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -149,7 +165,7 @@ class SystemAPI:
     def get_running_apps(self) -> list[str]:
         with self._lock:
             linux = [aid for aid in list(self._apps.keys())
-                    if self._is_running_locked(aid)]
+                     if self._is_running_locked(aid)]
             siamba = list(self._siamba_apps.keys())
         return linux + siamba
 
@@ -443,7 +459,8 @@ class SystemAPI:
 
     def _parse_desktop(self, path: Path) -> dict | None:
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")
+            # utf-8-sig — снимаем BOM, если он там есть.
+            content = path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             return None
 
@@ -536,19 +553,17 @@ class SystemAPI:
     # ------------------------------------------------------------------
     # Конфигурация дока
     # ------------------------------------------------------------------
-    DEFAULT_DOCK = [
-        "xed", "gnome-terminal", "firefox", "thunderbird", "rhythmbox",
-        "eog", "gnome-calendar", "gnome-control-center", "nautilus",
-    ]
-
     def get_dock_config(self) -> list[str]:
         try:
             if self._dock_config_path.exists():
-                data = json.loads(self._dock_config_path.read_text(encoding="utf-8"))
+                data = _read_json(self._dock_config_path)
                 if isinstance(data, list) and all(isinstance(x, str) for x in data):
+                    if DEV_MODE:
+                        _log(f"dock config loaded: {data}")
                     return data
-        except (OSError, json.JSONDecodeError) as e:
-            _log(f"dock config read failed: {e}")
+                _log(f"dock config: expected list[str], got {type(data).__name__}")
+        except Exception as e:
+            _log(f"dock config read failed: {type(e).__name__}: {e}")
         return list(self.DEFAULT_DOCK)
 
     def set_dock_config(self, ids: list) -> dict:
@@ -608,6 +623,7 @@ class SystemAPI:
     def _unregister_siamba_app(self, key: str) -> None:
         with self._lock:
             self._siamba_apps.pop(key, None)
+
 
 # ==================================================================
 # AppBridge — js_api для окна конкретного siamba-приложения
@@ -677,8 +693,10 @@ class AppBridge:
                 proc.terminate()
                 proc.wait(timeout=2)
             except Exception:
-                try: proc.kill()
-                except Exception: pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     # ----------------------------------------------------------
     # Чтение из бэкенда
@@ -702,7 +720,8 @@ class AppBridge:
     def _read_stderr(self):
         try:
             for line in self._proc.stderr:
-                print(f"[{self.app_id}] {line.rstrip()}", file=sys.stderr, flush=True)
+                print(f"[{self.app_id}] {line.rstrip()}",
+                      file=sys.stderr, flush=True)
         except Exception:
             pass
 
@@ -779,7 +798,7 @@ class AppBridge:
     def get_app_info(self):
         """Метаданные окна — UI может показать имя, версию и т.п."""
         try:
-            mf = json.loads((self.app_dir / "manifest.json").read_text(encoding="utf-8"))
+            mf = _read_json(self.app_dir / "manifest.json")
         except Exception:
             mf = {}
         return {
@@ -791,8 +810,10 @@ class AppBridge:
     # --- оконные операции для frameless-режима ---
     def window_move(self, x: int, y: int):
         if self._window:
-            try: self._window.move(int(x), int(y))
-            except Exception: pass
+            try:
+                self._window.move(int(x), int(y))
+            except Exception:
+                pass
         return {"ok": True}
 
     def window_get_position(self):
@@ -805,14 +826,18 @@ class AppBridge:
 
     def window_minimize(self):
         if self._window:
-            try: self._window.minimize()
-            except Exception: pass
+            try:
+                self._window.minimize()
+            except Exception:
+                pass
         return {"ok": True}
 
     def window_close(self):
         if self._window:
-            try: self._window.destroy()
-            except Exception: pass
+            try:
+                self._window.destroy()
+            except Exception:
+                pass
         return {"ok": True}
 
 
@@ -859,7 +884,7 @@ class AppManager:
             app_root = manifest_path.parent
 
             try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest = _read_json(manifest_path)
             except Exception as e:
                 return {"ok": False, "error": f"bad manifest: {e}"}
 
@@ -890,7 +915,7 @@ class AppManager:
             if not mf_path.is_file():
                 continue
             try:
-                mf = json.loads(mf_path.read_text(encoding="utf-8"))
+                mf = _read_json(mf_path)
             except Exception:
                 continue
 
@@ -940,7 +965,7 @@ class AppManager:
             return {"ok": False, "error": "ui/index.html missing"}
 
         try:
-            mf = json.loads(manifest_path.read_text(encoding="utf-8"))
+            mf = _read_json(manifest_path)
         except Exception as e:
             return {"ok": False, "error": f"bad manifest: {e}"}
 
@@ -1004,6 +1029,7 @@ class AppManager:
             return {"ok": True}
         except OSError as e:
             return {"ok": False, "error": str(e)}
+
 
 # ==================================================================
 # Точка входа

@@ -610,17 +610,36 @@
     } catch (e) { showToast(`${action}: ${e}`); }
   }
 
-  el.brandMenu.querySelectorAll('button[data-action]').forEach(btn => {
+    async function doLogout() {
+    const a = api();
+    if (!a || typeof a.logout !== 'function') {
+      showToast('logout: бэкенд недоступен');
+      return;
+    }
+    try {
+      const res = await a.logout();
+      // окно уже переходит на login — просто на всякий случай
+      if (!res || !res.ok) showToast('logout: ' + ((res && res.error) || 'ошибка'));
+    } catch (e) {
+      showToast('logout: ' + e);
+    }
+  }
+
+    el.brandMenu.querySelectorAll('button[data-action]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const action = btn.dataset.action;
 
-      if (action === 'shutdown' || action === 'reboot') {
+      if (action === 'shutdown' || action === 'reboot' || action === 'logout') {
         const original = btn.dataset.label || btn.textContent;
         btn.dataset.label = original;
+
+        const confirmText =
+          action === 'shutdown' ? 'Нажмите ещё раз: выключить' :
+          action === 'reboot'   ? 'Нажмите ещё раз: перезагрузить' :
+                                  'Нажмите ещё раз: выйти';
+
         if (!pendingConfirm.has(btn)) {
-          btn.textContent = action === 'shutdown'
-            ? 'Нажмите ещё раз: выключить'
-            : 'Нажмите ещё раз: перезагрузить';
+          btn.textContent = confirmText;
           const t = setTimeout(() => {
             btn.textContent = original;
             pendingConfirm.delete(btn);
@@ -632,9 +651,15 @@
         pendingConfirm.delete(btn);
         btn.textContent = original;
         closeAllPopovers();
-        await runPowerAction(action);
+
+        if (action === 'logout') {
+          await doLogout();
+        } else {
+          await runPowerAction(action);
+        }
         return;
       }
+
       closeAllPopovers();
       if (action === 'about') showToast('SIamba OS · pre-alpha');
       else if (action === 'settings') launchOrFocus('gnome-control-center');

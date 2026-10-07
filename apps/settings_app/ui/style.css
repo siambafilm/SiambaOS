@@ -444,3 +444,26 @@ button, input { font: inherit; color: inherit; }
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* ---------- Checkbox-строка в модалках ---------- */
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+.check-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.check-row:hover { color: var(--text); }
+
+/* Прячем поле пароля, когда галочка снята */
+.field.hidden { display: none; }

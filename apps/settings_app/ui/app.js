@@ -161,7 +161,7 @@
     if (e.key === 'Escape' && !el.modalOverlay.hidden) closeModal();
   });
 
-  function openCreateUserModal() {
+    function openCreateUserModal() {
     openModal({
       title: 'Новый пользователь',
       bodyHTML: `
@@ -175,7 +175,11 @@
           <input id="m-display" type="text" autocomplete="off"
                  placeholder="Alice Ivanova">
         </div>
-        <div class="field">
+        <label class="check-row">
+          <input type="checkbox" id="m-require" checked>
+          <span>Запрашивать пароль при входе</span>
+        </label>
+        <div class="field" id="m-pwd-field">
           <label>Пароль</label>
           <input id="m-password" type="password" autocomplete="new-password"
                  placeholder="минимум 4 символа">
@@ -188,15 +192,23 @@
           onClick: async () => {
             const username = el.modalBody.querySelector('#m-username').value.trim();
             const display  = el.modalBody.querySelector('#m-display').value.trim();
-            const password = el.modalBody.querySelector('#m-password').value;
+            const require  = el.modalBody.querySelector('#m-require').checked;
+            const password = require
+              ? el.modalBody.querySelector('#m-password').value
+              : '';
 
-            if (!username || !password) {
-              showToast('Заполните логин и пароль'); return;
+            if (!username) { showToast('Введите логин'); return; }
+            if (require && password.length < 4) {
+              showToast('Пароль минимум 4 символа'); return;
             }
+
             let res;
             try {
               res = await call('users.create', {
-                username, password, display_name: display || username,
+                username,
+                password,
+                display_name: display || username,
+                require_password: require,
               });
             } catch (e) { showToast('Ошибка: ' + e.message); return; }
 
@@ -205,16 +217,33 @@
               return;
             }
             closeModal();
-            showToast(`Пользователь «${username}» создан`);
+            showToast(require
+              ? `Пользователь «${username}» создан`
+              : `Пользователь «${username}» создан без пароля`);
             refreshUsers();
           },
         },
       ],
     });
+
+    // Показ/скрытие поля пароля по галочке.
+    const chk = el.modalBody.querySelector('#m-require');
+    const pwdField = el.modalBody.querySelector('#m-pwd-field');
+    chk.addEventListener('change', () => {
+      pwdField.classList.toggle('hidden', !chk.checked);
+      if (chk.checked) {
+        setTimeout(() => el.modalBody.querySelector('#m-password').focus(), 40);
+      }
+    });
+
     setTimeout(() => el.modalBody.querySelector('#m-username').focus(), 40);
   }
 
   function openEditUserModal(u) {
+    // Если поле не пришло (старый юзер, созданный до фичи) — считаем,
+    // что пароль требовался.
+    const requireInitial = u.require_password !== false;
+
     openModal({
       title: 'Изменить пользователя',
       bodyHTML: `
@@ -227,7 +256,11 @@
           <input id="m-display" type="text"
                  value="${escapeHtml(u.display_name || u.username)}">
         </div>
-        <div class="field">
+        <label class="check-row">
+          <input type="checkbox" id="m-require" ${requireInitial ? 'checked' : ''}>
+          <span>Запрашивать пароль при входе</span>
+        </label>
+        <div class="field${requireInitial ? '' : ' hidden'}" id="m-pwd-field">
           <label>Новый пароль (оставьте пустым, чтобы не менять)</label>
           <input id="m-password" type="password" autocomplete="new-password">
         </div>
@@ -238,11 +271,25 @@
           label: 'Сохранить', variant: 'primary',
           onClick: async () => {
             const display  = el.modalBody.querySelector('#m-display').value.trim();
-            const password = el.modalBody.querySelector('#m-password').value;
+            const require  = el.modalBody.querySelector('#m-require').checked;
+            const password = require
+              ? el.modalBody.querySelector('#m-password').value
+              : '';
 
             const params = { username: u.username };
-            if (display && display !== u.display_name) params.display_name = display;
-            if (password) params.password = password;
+
+            if (display && display !== (u.display_name || '')) {
+              params.display_name = display;
+            }
+            if (password) {
+              if (password.length < 4) {
+                showToast('Пароль минимум 4 символа'); return;
+              }
+              params.password = password;
+            }
+            if (require !== requireInitial) {
+              params.require_password = require;
+            }
 
             if (Object.keys(params).length === 1) {
               closeModal(); return;
@@ -262,6 +309,12 @@
           },
         },
       ],
+    });
+
+    const chk = el.modalBody.querySelector('#m-require');
+    const pwdField = el.modalBody.querySelector('#m-pwd-field');
+    chk.addEventListener('change', () => {
+      pwdField.classList.toggle('hidden', !chk.checked);
     });
   }
 

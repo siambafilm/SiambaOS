@@ -1,0 +1,348 @@
+/* ================================================================
+   Login / первый запуск
+   ================================================================ */
+
+:root {
+  --radius-lg: 18px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --accent: #5e9eff;
+  --danger: #ff5f57;
+}
+
+/* Атрибут hidden должен побеждать любые display:flex/grid из этого файла. */
+[hidden] { display: none !important; }
+
+body[data-theme="dark"] {
+  --bg:          #0a0a12;
+  --panel-bg:    rgba(28, 28, 38, 0.78);
+  --panel-border:rgba(255, 255, 255, 0.10);
+  --text:        #f2f2f4;
+  --text-dim:    rgba(242, 242, 244, 0.62);
+  --text-mute:   rgba(242, 242, 244, 0.38);
+  --input-bg:    rgba(255, 255, 255, 0.08);
+  --hover:       rgba(255, 255, 255, 0.10);
+}
+
+body[data-theme="light"] {
+  --bg:          #e8e8ee;
+  --panel-bg:    rgba(255, 255, 255, 0.72);
+  --panel-border:rgba(0, 0, 0, 0.08);
+  --text:        #1c1c1e;
+  --text-dim:    rgba(28, 28, 30, 0.66);
+  --text-mute:   rgba(28, 28, 30, 0.40);
+  --input-bg:    rgba(0, 0, 0, 0.05);
+  --hover:       rgba(0, 0, 0, 0.06);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  color: var(--text);
+  font-family: -apple-system, "SF Pro Text", "Inter",
+               system-ui, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button, input { font: inherit; color: inherit; }
+
+/* ================================================================
+   ОБОИ — те же Aurora градиенты, что и на рабочем столе
+   ================================================================ */
+.wallpaper {
+  position: fixed; inset: 0;
+  overflow: hidden;
+  background: #08051a;
+  z-index: 0;
+}
+.wallpaper::before {
+  content: "";
+  position: absolute; inset: -5%;
+  background:
+    radial-gradient(ellipse 55% 45% at 84% 86%, rgba(255,130,70,0.55), transparent 62%),
+    radial-gradient(ellipse 50% 42% at 74% 22%, rgba(255,60,140,0.55), transparent 62%),
+    radial-gradient(ellipse 62% 55% at 22% 44%, rgba(150,70,240,0.55), transparent 64%),
+    radial-gradient(ellipse 55% 45% at  8% 84%, rgba(50,150,255,0.48), transparent 62%),
+    radial-gradient(ellipse 90% 70% at 50% 55%, rgba(90,60,200,0.38), transparent 70%),
+    linear-gradient(160deg, #0a0620 0%, #150a2e 35%, #1c0a35 60%, #0e0824 100%);
+}
+.wallpaper::after {
+  content: "";
+  position: absolute; inset: 0;
+  background-image:
+    radial-gradient(ellipse at center, transparent 30%, rgba(0,0,0,0.60) 100%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.05 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  background-size: cover, 240px 240px;
+  pointer-events: none;
+  mix-blend-mode: normal, overlay;
+}
+
+body[data-theme="light"] .wallpaper::before {
+  background:
+    radial-gradient(ellipse 55% 45% at 84% 86%, rgba(255,180,120,0.55), transparent 62%),
+    radial-gradient(ellipse 50% 42% at 74% 22%, rgba(255,140,180,0.55), transparent 62%),
+    radial-gradient(ellipse 62% 55% at 22% 44%, rgba(180,140,255,0.55), transparent 64%),
+    radial-gradient(ellipse 55% 45% at  8% 84%, rgba(120,180,255,0.48), transparent 62%),
+    radial-gradient(ellipse 90% 70% at 50% 55%, rgba(160,140,220,0.38), transparent 70%),
+    linear-gradient(160deg, #f8f0ff 0%, #f0e6fa 35%, #eae0f8 60%, #f0ecfc 100%);
+}
+body[data-theme="light"] .wallpaper::after {
+  background-image:
+    radial-gradient(ellipse at center, transparent 30%, rgba(255,255,255,0.35) 100%);
+  background-size: cover;
+  mix-blend-mode: normal;
+}
+
+/* ================================================================
+   STAGE
+   ================================================================ */
+.login-stage {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 60px 24px;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+  max-width: 640px;
+}
+
+/* ================================================================
+   LOGIN SCREEN
+   ================================================================ */
+.login-clock { text-align: center; margin-bottom: 8px; }
+.clock-time  { font-size: 64px; font-weight: 200; letter-spacing: -2px; }
+.clock-date  { font-size: 15px; color: var(--text-dim); margin-top: 2px; }
+
+/* --- Плитки юзеров --- */
+.user-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+  justify-content: center;
+  padding: 8px;
+}
+.user-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.14s ease, transform 0.14s ease;
+}
+.user-tile:hover  { background: var(--hover); }
+.user-tile:active { transform: scale(0.96); }
+
+.user-tile-avatar {
+  width: 96px; height: 96px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, #7dd3fc, #c084fc);
+  color: #0a0a14;
+  font-size: 40px;
+  font-weight: 700;
+  box-shadow: 0 10px 26px rgba(0,0,0,0.45),
+              inset 0 1px 0 rgba(255,255,255,0.28);
+}
+.user-tile-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* --- Форма входа --- */
+.login-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 22px 24px 18px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+  min-width: 320px;
+  animation: pop-in 0.18s ease-out;
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+
+.login-panel .avatar {
+  width: 72px; height: 72px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  background: linear-gradient(135deg, #7dd3fc, #c084fc);
+  color: #0a0a14;
+  font-size: 30px;
+  font-weight: 700;
+  margin-top: -50px;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.45);
+}
+.login-name { font-size: 15px; font-weight: 600; }
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.password-row input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--input-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  color: var(--text);
+  font-size: 14px;
+  transition: border-color 0.12s ease;
+}
+.password-row input:focus { border-color: var(--accent); }
+
+.btn {
+  padding: 10px 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s ease, filter 0.12s ease;
+  font-size: 14px;
+}
+.btn:hover  { filter: brightness(1.08); }
+.btn:active { transform: scale(0.98); }
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+.login-error {
+  color: var(--danger);
+  font-size: 12px;
+  text-align: center;
+  min-height: 16px;
+}
+
+.link {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.link:hover { color: var(--text); background: var(--hover); }
+
+/* ================================================================
+   FIRST-RUN SCREEN
+   ================================================================ */
+.first-card {
+  width: 100%;
+  max-width: 460px;
+  padding: 30px 28px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: pop-in 0.2s ease-out;
+}
+.first-card h1 {
+  font-size: 20px;
+  font-weight: 600;
+  text-align: center;
+}
+.first-card > p {
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.first-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 6px;
+}
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: 12px; color: var(--text-dim); }
+.field input {
+  padding: 10px 14px;
+  background: var(--input-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  outline: none;
+  font-size: 14px;
+  transition: border-color 0.12s ease;
+}
+.field input:focus { border-color: var(--accent); }
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.check input { accent-color: var(--accent); }
+
+#first-pwd-field.hidden { display: none; }
+
+/* ================================================================
+   POWER BAR (bottom-right)
+   ================================================================ */
+.power-bar {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  display: flex;
+  gap: 10px;
+  z-index: 10;
+}
+.pwr-btn {
+  width: 40px; height: 40px;
+  display: grid; place-items: center;
+  background: var(--panel-bg);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--panel-border);
+  border-radius: 50%;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.14s ease, transform 0.14s ease;
+}
+.pwr-btn:hover  { background: var(--hover); }
+.pwr-btn:active { transform: scale(0.94); }

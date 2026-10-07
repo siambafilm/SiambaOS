@@ -1,0 +1,8 @@
+{
+  "username": "test",
+  "display_name": "test",
+  "password_hash": "pbkdf2_sha256$200000$d80163db352f6cdd56df2dd44dd923f0$182672d8f1636e0a60ef4342cf2cd8cc5100adc1c71dc755fd9140b983299521",
+  "require_password": true,
+  "avatar": null,
+  "created": "2026-10-07T18:32:17"
+}

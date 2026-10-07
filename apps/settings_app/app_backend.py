@@ -23,29 +23,35 @@ def users_list():
     return {"ok": True, "users": rt.proxy("get_users")}
 
 
-@rt.method("users.create")
-def users_create(username: str, password: str, display_name: str = ""):
-    res = rt.proxy("create_user",
-                   username=username,
-                   password=password,
-                   display_name=display_name or username)
-    return res
-
-
 @rt.method("users.delete")
 def users_delete(username: str):
     return rt.proxy("delete_user", username=username)
 
 
+@rt.method("users.create")
+def users_create(username: str,
+                 password: str = "",
+                 display_name: str = "",
+                 require_password: bool = True):
+    return rt.proxy("create_user",
+                    username=username,
+                    password=password,
+                    display_name=display_name or username,
+                    require_password=bool(require_password))
+
+
 @rt.method("users.update")
 def users_update(username: str,
                  display_name: str | None = None,
-                 password: str | None = None):
+                 password: str | None = None,
+                 require_password: bool | None = None):
     kwargs = {"username": username}
     if display_name is not None:
         kwargs["display_name"] = display_name
-    if password is not None:
+    if password is not None and password != "":
         kwargs["password"] = password
+    if require_password is not None:
+        kwargs["require_password"] = bool(require_password)
     return rt.proxy("update_user", **kwargs)
 
 

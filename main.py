@@ -6,9 +6,12 @@ pywebview это приводит к дедлокам и падениям. Вм�
 опрашивает get_running_apps() раз в ~1.5 секунды.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -26,21 +29,17 @@ DEVTOOLS     = True
 WINDOW_TITLE = "SIamba OS"
 BASE_DIR     = Path(__file__).resolve().parent
 UI_INDEX     = BASE_DIR / "ui" / "index.html"
+LOGIN_INDEX  = BASE_DIR / "ui" / "login.html"
 
 WATCH_INTERVAL = 0.5
 FORK_GRACE     = 1.5
 
 
 def _log(*args):
-    """Диагностика в stderr — не мешает GUI, видна в терминале."""
     print("[SIamba OS]", *args, file=sys.stderr, flush=True)
 
 
 def _read_json(path: Path):
-    """
-    Читает JSON с поддержкой UTF-8 BOM (utf-8-sig корректно съедает BOM,
-    если он есть, и работает как обычный utf-8, если его нет).
-    """
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
@@ -53,38 +52,41 @@ class SystemAPI:
         "eog", "gnome-calendar", "gnome-control-center", "nautilus",
     ]
 
+    USERNAME_RE = re.compile(r"^[a-z][a-z0-9_\-]{1,31}$")
+
     def __init__(self):
         self._apps: dict[str, dict] = {}
         self._lock = threading.RLock()
         self._apps_cache: tuple[float, list[dict]] | None = None
-        self._apps_cache_ttl = 60.0   # сек
-        self._dock_config_path = Path(__file__).resolve().parent / "dock.json"
+        self._apps_cache_ttl = 60.0
+        self._dock_config_path = BASE_DIR / "dock.json"
+        self._users_root = BASE_DIR / "users"
+        self._theme_config_path = BASE_DIR / "theme.json"
+        self._session_path = BASE_DIR / "session.json"
 
-        # siamba-приложения и их менеджер — ДО запуска watcher-треда,
-        # чтобы к моменту первого тика атрибуты уже существовали.
         self._siamba_apps: dict[str, object] = {}
         self._app_manager = None
+        self._main_window = None   # ссылка на главное окно (для logout)
 
-        # Один watcher, не два.
         threading.Thread(target=self._watch_loop, daemon=True).start()
 
     # ------------------------------------------------------------------
-    # Низкоуровневый безопасный вызов
+    # Служебное
     # ------------------------------------------------------------------
     @staticmethod
     def _run(args, timeout=3, check=False):
         try:
             return subprocess.run(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=timeout,
-                check=check,
+                args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=timeout, check=check,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError,
                 subprocess.CalledProcessError, PermissionError, OSError):
             return None
+
+    def set_main_window(self, window):
+        """Ссылка на главное окно. Нужна для logout / перехода на login."""
+        self._main_window = window
 
     # ------------------------------------------------------------------
     # Системные метрики
@@ -117,11 +119,6 @@ class SystemAPI:
     # Запуск приложений
     # ------------------------------------------------------------------
     def launch_app(self, app_id: str, exec_cmd: str | None = None) -> dict:
-        """
-        app_id — ключ, под которым приложение регистрируется в состоянии
-                (совпадает с data-app иконки в доке).
-        exec_cmd — что реально запускать; если None, запускается сам app_id.
-        """
         if not app_id or not isinstance(app_id, str):
             return {"ok": False, "error": "empty app_id"}
 
@@ -140,11 +137,9 @@ class SystemAPI:
         try:
             proc = subprocess.Popen(
                 argv,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                close_fds=True,
+                start_new_session=True, close_fds=True,
             )
         except FileNotFoundError:
             return {"ok": False, "error": f"not found: {argv[0]}"}
@@ -157,9 +152,8 @@ class SystemAPI:
             self._apps[app_id] = {
                 "proc": proc,
                 "started_at": time.time(),
-                "argv": argv,          # для pgrep-fallback
+                "argv": argv,
             }
-
         return {"ok": True, "pid": proc.pid}
 
     def get_running_apps(self) -> list[str]:
@@ -230,21 +224,58 @@ class SystemAPI:
             return {"ok": False, "error": str(e)}
 
     # ------------------------------------------------------------------
+    # Выход из системы (logout)
+    # ------------------------------------------------------------------
+    def logout(self) -> dict:
+        """
+        Закрывает все siamba-окна, сбрасывает сессию и переводит
+        главное окно обратно на логин-экран.
+        """
+        # 1) Закрыть дочерние окна
+        if self._app_manager:
+            try:
+                self._app_manager.shutdown_all()
+            except Exception as e:
+                _log(f"shutdown_all failed: {e}")
+
+        # 2) Сбросить активного пользователя
+        self.clear_session()
+
+        # 3) Перевести главное окно на логин-экран
+        if self._main_window is not None:
+            try:
+                self._main_window.load_url(LOGIN_INDEX.as_uri())
+            except Exception as e:
+                _log(f"load_url(login) failed: {e}")
+
+        return {"ok": True}
+
+    def goto_desktop(self) -> dict:
+        """
+        Переводит главное окно на рабочий стол.
+        Вызывается из login.js после успешной аутентификации.
+        """
+        if self._main_window is not None:
+            try:
+                self._main_window.load_url(UI_INDEX.as_uri())
+            except Exception as e:
+                _log(f"load_url(desktop) failed: {e}")
+                return {"ok": False, "error": str(e)}
+        return {"ok": True}
+
+    # ------------------------------------------------------------------
     # Звук
     # ------------------------------------------------------------------
     def get_volume(self) -> dict:
         vol, muted = 0, False
-
         r = self._run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"], timeout=2)
         if r and r.returncode == 0:
             m = re.search(r"(\d+)%", r.stdout)
             if m:
                 vol = int(m.group(1))
-
         r = self._run(["pactl", "get-sink-mute", "@DEFAULT_SINK@"], timeout=2)
         if r and r.returncode == 0:
             muted = r.stdout.strip().lower().endswith("yes")
-
         return {"volume": vol, "muted": muted}
 
     def set_volume(self, value) -> dict:
@@ -252,40 +283,24 @@ class SystemAPI:
             v = max(0, min(100, int(value)))
         except (TypeError, ValueError):
             return {"ok": False, "error": "bad value"}
-
-        r = self._run(
-            ["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{v}%"],
-            timeout=2,
-        )
+        r = self._run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{v}%"],
+                      timeout=2)
         if r and r.returncode == 0:
             return {"ok": True, "volume": v}
         return {"ok": False, "error": "pactl failed"}
 
     def toggle_mute(self) -> dict:
-        r = self._run(
-            ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"],
-            timeout=2,
-        )
+        r = self._run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"],
+                      timeout=2)
         if r and r.returncode == 0:
-            # Возвращаем уже обновлённое состояние
             return self.get_volume()
         return {"ok": False, "error": "pactl failed"}
 
     def play_volume_feedback(self) -> dict:
-        """
-        Короткий системный звук изменения громкости.
-        Порядок: canberra-gtk-play → paplay с известными путями.
-        Возвращает быстро, чтобы не тормозить UI при драге слайдера.
-        """
-        # 1) canberra — стандарт freedesktop, есть на Mint/Debian с libcanberra
-        r = self._run(
-            ["canberra-gtk-play", "-i", "audio-volume-change"],
-            timeout=2,
-        )
+        r = self._run(["canberra-gtk-play", "-i", "audio-volume-change"],
+                      timeout=2)
         if r is not None and r.returncode == 0:
             return {"ok": True, "via": "canberra"}
-
-        # 2) paplay с известными звуковыми файлами
         candidates = [
             "/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga",
             "/usr/share/sounds/freedesktop/stereo/bell.oga",
@@ -297,7 +312,6 @@ class SystemAPI:
                 r = self._run(["paplay", path], timeout=2)
                 if r is not None and r.returncode == 0:
                     return {"ok": True, "via": "paplay", "file": path}
-
         return {"ok": False, "error": "no sound player available"}
 
     # ------------------------------------------------------------------
@@ -306,16 +320,11 @@ class SystemAPI:
     def get_wifi_state(self) -> dict:
         result = {"enabled": False, "available": False,
                   "networks": [], "connected": None}
-
-        # nmcli вообще установлен?
         r = self._run(["nmcli", "--version"], timeout=2)
         if r is None or r.returncode != 0:
             return result
         result["available"] = True
 
-        # 'nmcli radio wifi' → "enabled" | "disabled" (без префикса поля).
-        # Это надёжнее, чем '-f WIFI general', формат которого зависит
-        # от версии NetworkManager.
         r = self._run(["nmcli", "radio", "wifi"], timeout=2)
         if r is None or r.returncode != 0:
             return result
@@ -323,8 +332,6 @@ class SystemAPI:
         if not result["enabled"]:
             return result
 
-        # Список сетей. Многострочный формат (-m multiline) устойчив
-        # к двоеточиям и пробелам в SSID — обычный '-t' ломается.
         r = self._run(
             ["nmcli", "-m", "multiline",
              "-f", "IN-USE,SSID,SIGNAL,SECURITY",
@@ -332,12 +339,8 @@ class SystemAPI:
             timeout=8,
         )
         if r is None or r.returncode != 0:
-            if DEV_MODE:
-                _log("wifi list failed:",
-                     (r.stderr.strip() if r else "timeout"))
             return result
 
-        # Разбираем записи, разделённые пустой строкой.
         records: list[dict] = []
         current: dict = {}
         for line in r.stdout.splitlines():
@@ -358,12 +361,10 @@ class SystemAPI:
             if not ssid or ssid == "--" or ssid in seen:
                 continue
             seen.add(ssid)
-
             try:
                 sig = int(rec.get("SIGNAL") or 0)
             except ValueError:
                 sig = 0
-
             in_use = (rec.get("IN-USE") or "").strip() == "*"
             result["networks"].append({"ssid": ssid, "signal": sig})
             if in_use:
@@ -371,23 +372,14 @@ class SystemAPI:
 
         result["networks"].sort(key=lambda n: -n["signal"])
         result["networks"] = result["networks"][:12]
-
-        if DEV_MODE:
-            _log(f"wifi: enabled={result['enabled']}, "
-                 f"connected={result['connected']!r}, "
-                 f"networks={len(result['networks'])}")
-
         return result
 
     def toggle_wifi(self) -> dict:
-        # Читаем состояние прямо сейчас, без кэша
         r = self._run(["nmcli", "radio", "wifi"], timeout=2)
         if r is None or r.returncode != 0:
             return {"ok": False, "error": "nmcli unavailable"}
-
         enabled = r.stdout.strip().lower().endswith("enabled")
         target  = "off" if enabled else "on"
-
         r2 = self._run(["nmcli", "radio", "wifi", target], timeout=3)
         if r2 is not None and r2.returncode == 0:
             return {"ok": True, "enabled": (target == "on")}
@@ -396,10 +388,7 @@ class SystemAPI:
     def connect_wifi(self, ssid: str) -> dict:
         if not ssid:
             return {"ok": False, "error": "empty ssid"}
-        r = self._run(
-            ["nmcli", "device", "wifi", "connect", ssid],
-            timeout=20,
-        )
+        r = self._run(["nmcli", "device", "wifi", "connect", ssid], timeout=20)
         if r is None:
             return {"ok": False, "error": "timeout or nmcli missing"}
         if r.returncode == 0:
@@ -411,7 +400,6 @@ class SystemAPI:
     # Сканирование приложений
     # ------------------------------------------------------------------
     def scan_linux_apps(self) -> list[dict]:
-        """Читает .desktop-файлы из системной и пользовательской директорий."""
         now = time.time()
         if self._apps_cache and (now - self._apps_cache[0]) < self._apps_cache_ttl:
             return self._apps_cache[1]
@@ -421,7 +409,6 @@ class SystemAPI:
             Path("/usr/local/share/applications"),
             Path.home() / ".local/share/applications",
         ]
-
         seen: set[str] = set()
         results: list[dict] = []
 
@@ -436,13 +423,10 @@ class SystemAPI:
 
         results.sort(key=lambda x: x["name"].lower())
         self._apps_cache = (now, results)
-        if DEV_MODE:
-            _log(f"scanned {len(results)} .desktop entries")
         return results
 
     @staticmethod
     def _localized(fields: dict, base: str) -> str:
-        """Возвращает Name[ru_RU] → Name[ru] → Name по локали окружения."""
         langs: list[str] = []
         for var in ("LC_MESSAGES", "LANG"):
             val = os.environ.get(var, "")
@@ -459,7 +443,6 @@ class SystemAPI:
 
     def _parse_desktop(self, path: Path) -> dict | None:
         try:
-            # utf-8-sig — снимаем BOM, если он там есть.
             content = path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             return None
@@ -476,7 +459,7 @@ class SystemAPI:
             if not in_entry or "=" not in line:
                 continue
             k, v = line.split("=", 1)
-            if k not in fields:          # первое значение выигрывает
+            if k not in fields:
                 fields[k] = v.strip()
 
         if fields.get("Type") != "Application":
@@ -491,7 +474,6 @@ class SystemAPI:
         if not name or not exec_line:
             return None
 
-        # Убираем field codes ( %f %F %u %U %d %D %n %N %i %c %k %v %m )
         exec_clean = re.sub(r"%[fFuUdDnNickvm]", "", exec_line)
         exec_clean = re.sub(r"\s+", " ", exec_clean).strip()
         if not exec_clean:
@@ -500,7 +482,6 @@ class SystemAPI:
         if fields.get("Terminal", "").lower() == "true":
             exec_clean = "x-terminal-emulator -e " + exec_clean
 
-        # basename первого токена — совпадает с data-app иконок дока
         try:
             bin_name = Path(shlex.split(exec_clean)[0]).name
         except Exception:
@@ -526,7 +507,6 @@ class SystemAPI:
         p = Path(icon)
         if p.is_absolute() and p.is_file():
             return str(p)
-
         bases = [
             Path("/usr/share/icons/hicolor"),
             Path("/usr/share/icons/Adwaita"),
@@ -535,15 +515,14 @@ class SystemAPI:
         ]
         sizes = ["256x256", "128x128", "64x64", "48x48", "32x32", "scalable"]
         exts  = [".png", ".svg", ".xpm"]
-
         for base in bases:
             if not base.is_dir():
                 continue
-            for ext in exts:                        # плоская раскладка
+            for ext in exts:
                 f = base / (icon + ext)
                 if f.is_file():
                     return str(f)
-            for size in sizes:                      # <base>/<size>/apps/
+            for size in sizes:
                 for ext in exts:
                     f = base / size / "apps" / (icon + ext)
                     if f.is_file():
@@ -558,10 +537,7 @@ class SystemAPI:
             if self._dock_config_path.exists():
                 data = _read_json(self._dock_config_path)
                 if isinstance(data, list) and all(isinstance(x, str) for x in data):
-                    if DEV_MODE:
-                        _log(f"dock config loaded: {data}")
                     return data
-                _log(f"dock config: expected list[str], got {type(data).__name__}")
         except Exception as e:
             _log(f"dock config read failed: {type(e).__name__}: {e}")
         return list(self.DEFAULT_DOCK)
@@ -569,14 +545,12 @@ class SystemAPI:
     def set_dock_config(self, ids: list) -> dict:
         if not isinstance(ids, list):
             return {"ok": False, "error": "expected list"}
-
         clean: list[str] = []
         for x in ids:
             if isinstance(x, str) and x.strip() and x not in clean:
                 clean.append(x.strip())
             if len(clean) >= 30:
                 break
-
         try:
             self._dock_config_path.parent.mkdir(parents=True, exist_ok=True)
             self._dock_config_path.write_text(
@@ -614,7 +588,7 @@ class SystemAPI:
         return self._app_manager.uninstall_app(app_id)
 
     # ------------------------------------------------------------------
-    # Регистрация окон siamba-приложений (для точек в доке)
+    # Регистрация siamba-окон
     # ------------------------------------------------------------------
     def _register_siamba_app(self, key: str, window) -> None:
         with self._lock:
@@ -624,27 +598,310 @@ class SystemAPI:
         with self._lock:
             self._siamba_apps.pop(key, None)
 
+    # ==================================================================
+    # ВИРТУАЛЬНЫЕ ПОЛЬЗОВАТЕЛИ SIAMBA (изолированы от Linux)
+    # ==================================================================
+    #
+    # Структура:
+    #   users/
+    #     <username>/
+    #       profile.json    — username, display_name, password_hash,
+    #                         require_password, avatar, created
+    #       settings.json   — theme, wallpaper, locale
+    #       home/
+
+    @staticmethod
+    def _hash_password(password: str, salt: bytes | None = None) -> str:
+        if salt is None:
+            salt = secrets.token_bytes(16)
+        iterations = 200_000
+        dk = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt, iterations
+        )
+        return f"pbkdf2_sha256${iterations}${salt.hex()}${dk.hex()}"
+
+    @staticmethod
+    def _verify_password(password: str, stored: str) -> bool:
+        try:
+            algo, iters, salt_hex, hash_hex = stored.split("$")
+            if algo != "pbkdf2_sha256":
+                return False
+            dk = hashlib.pbkdf2_hmac(
+                "sha256",
+                password.encode("utf-8"),
+                bytes.fromhex(salt_hex),
+                int(iters),
+            )
+            return hmac.compare_digest(dk.hex(), hash_hex)
+        except Exception:
+            return False
+
+    def _user_dir(self, username: str) -> Path:
+        return self._users_root / username
+
+    def get_users(self) -> list[dict]:
+        """
+        Список виртуальных юзеров. Хэши паролей наружу не отдаём —
+        только флаг require_password.
+        """
+        root = self._users_root
+        if not root.is_dir():
+            return []
+
+        out: list[dict] = []
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir():
+                continue
+            profile = entry / "profile.json"
+            if not profile.is_file():
+                continue
+            try:
+                data = _read_json(profile)
+            except Exception:
+                continue
+
+            out.append({
+                "username":         entry.name,
+                "display_name":     data.get("display_name") or entry.name,
+                "avatar":           data.get("avatar"),
+                "created":          data.get("created"),
+                "require_password": bool(data.get("require_password", True)),
+            })
+        return out
+
+    def create_user(self, username: str, password: str = "",
+                    display_name: str | None = None,
+                    require_password: bool = True) -> dict:
+        """
+        Создаёт виртуального юзера.
+        require_password=True  → пароль обязателен, храним хэш.
+        require_password=False → пароль не спрашивается, hash = "".
+        """
+        if not isinstance(username, str) or not self.USERNAME_RE.match(username):
+            return {"ok": False,
+                    "error": "invalid username (a-z, 0-9, _, -, 2..32)"}
+
+        user_dir = self._user_dir(username)
+        if user_dir.exists():
+            return {"ok": False, "error": "user already exists"}
+
+        require_password = bool(require_password)
+
+        if require_password:
+            if not isinstance(password, str) or len(password) < 4:
+                return {"ok": False, "error": "password too short (min 4)"}
+            pwd_hash = self._hash_password(password)
+        else:
+            pwd_hash = ""
+
+        try:
+            (user_dir / "home").mkdir(parents=True, exist_ok=False)
+        except OSError as e:
+            return {"ok": False, "error": f"mkdir failed: {e}"}
+
+        try:
+            profile = {
+                "username":         username,
+                "display_name":     (display_name or username).strip(),
+                "password_hash":    pwd_hash,
+                "require_password": require_password,
+                "avatar":           None,
+                "created":          time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            settings = {
+                "theme":     "dark",
+                "wallpaper": "aurora",
+                "locale":    "ru-RU",
+            }
+            (user_dir / "profile.json").write_text(
+                json.dumps(profile, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (user_dir / "settings.json").write_text(
+                json.dumps(settings, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            shutil.rmtree(user_dir, ignore_errors=True)
+            return {"ok": False, "error": f"write failed: {e}"}
+
+        _log(f"user created: {username} (require_password={require_password})")
+        return {"ok": True, "username": username}
+
+    def delete_user(self, username: str) -> dict:
+        if not isinstance(username, str) or not username:
+            return {"ok": False, "error": "empty username"}
+
+        user_dir = self._user_dir(username)
+        if not user_dir.is_dir():
+            return {"ok": False, "error": "user not found"}
+
+        try:
+            if user_dir.resolve() == self._users_root.resolve():
+                return {"ok": False, "error": "refusing to delete users root"}
+        except Exception:
+            pass
+
+        try:
+            shutil.rmtree(user_dir)
+        except OSError as e:
+            return {"ok": False, "error": f"rmtree failed: {e}"}
+
+        _log(f"user deleted: {username}")
+        return {"ok": True}
+
+    def update_user(self, username: str, *,
+                    display_name: str | None = None,
+                    password: str | None = None,
+                    require_password: bool | None = None) -> dict:
+        """
+        Меняет отображаемое имя, пароль и/или режим require_password.
+        Если require_password становится True и пароль не задан явно —
+        считаем, что пароль должен быть уже в профиле. Если его нет,
+        вернём ошибку.
+        """
+        if not isinstance(username, str) or not username:
+            return {"ok": False, "error": "empty username"}
+
+        profile_path = self._user_dir(username) / "profile.json"
+        if not profile_path.is_file():
+            return {"ok": False, "error": "user not found"}
+
+        try:
+            profile = _read_json(profile_path)
+        except Exception as e:
+            return {"ok": False, "error": f"read failed: {e}"}
+
+        if display_name is not None:
+            dn = str(display_name).strip()
+            if not dn:
+                return {"ok": False, "error": "empty display_name"}
+            profile["display_name"] = dn
+
+        if password is not None and password != "":
+            if len(password) < 4:
+                return {"ok": False, "error": "password too short (min 4)"}
+            profile["password_hash"] = self._hash_password(password)
+            # задать пароль → включаем требование пароля
+            profile["require_password"] = True
+
+        if require_password is not None:
+            require_password = bool(require_password)
+            if require_password and not profile.get("password_hash"):
+                return {"ok": False,
+                        "error": "cannot require password without one set"}
+            profile["require_password"] = require_password
+
+        try:
+            profile_path.write_text(
+                json.dumps(profile, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            return {"ok": False, "error": f"write failed: {e}"}
+
+        return {"ok": True}
+
+    def authenticate_user(self, username: str, password: str = "") -> dict:
+        """
+        Проверка пары логин/пароль.
+        Если у юзера require_password=False — пускаем без пароля.
+        """
+        profile_path = self._user_dir(username) / "profile.json"
+        if not profile_path.is_file():
+            return {"ok": False, "error": "user not found"}
+        try:
+            profile = _read_json(profile_path)
+        except Exception as e:
+            return {"ok": False, "error": f"read failed: {e}"}
+
+        if not profile.get("require_password", True):
+            return {"ok": True, "passwordless": True}
+
+        stored = profile.get("password_hash", "")
+        if self._verify_password(password, stored):
+            return {"ok": True}
+        return {"ok": False, "error": "wrong password"}
+
+    # ------------------------------------------------------------------
+    # Сессия (кто сейчас залогинен)
+    # ------------------------------------------------------------------
+    def get_current_session(self) -> dict:
+        try:
+            if self._session_path.exists():
+                data = _read_json(self._session_path)
+                if isinstance(data, dict):
+                    return {"username": data.get("username")}
+        except Exception as e:
+            _log(f"session read failed: {type(e).__name__}: {e}")
+        return {"username": None}
+
+    def set_current_session(self, username: str) -> dict:
+        if not isinstance(username, str) or not username:
+            return {"ok": False, "error": "empty username"}
+        if not self._user_dir(username).is_dir():
+            return {"ok": False, "error": "user not found"}
+        try:
+            self._session_path.write_text(
+                json.dumps({"username": username}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return {"ok": True, "username": username}
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+
+    def clear_session(self) -> dict:
+        try:
+            if self._session_path.exists():
+                self._session_path.unlink()
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True}
+
+    # ------------------------------------------------------------------
+    # Тема и обои (системная настройка)
+    # ------------------------------------------------------------------
+    def get_theme(self) -> dict:
+        default = {"theme": "dark", "wallpaper": "aurora"}
+        try:
+            if self._theme_config_path.exists():
+                data = _read_json(self._theme_config_path)
+                if isinstance(data, dict):
+                    default.update({k: v for k, v in data.items()
+                                    if k in ("theme", "wallpaper")})
+        except Exception as e:
+            _log(f"theme config read failed: {type(e).__name__}: {e}")
+        return default
+
+    def set_theme(self, theme: str | None = None,
+                  wallpaper: str | None = None) -> dict:
+        cur = self.get_theme()
+        if theme in ("dark", "light"):
+            cur["theme"] = theme
+        if isinstance(wallpaper, str) and wallpaper:
+            cur["wallpaper"] = wallpaper
+        try:
+            self._theme_config_path.write_text(
+                json.dumps(cur, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, **cur}
+
 
 # ==================================================================
-# AppBridge — js_api для окна конкретного siamba-приложения
+# AppBridge
 # ==================================================================
 class AppBridge:
-    """
-    Изолирует UI приложения от бэкенда и от системы:
-      JS (ui приложения) ↔ AppBridge.call(...) ↔ subprocess stdin
-      subprocess stdout (proxy) ↔ AppBridge ↔ SystemAPI (whitelist)
-    """
-
-    # Разрешённые системные методы — только их может вызвать приложение.
-    # Всё остальное отбивается с ошибкой "method not allowed".
     ALLOWED_PROXY = {
         "get_system_stats",
         "get_volume", "set_volume", "toggle_mute",
         "get_wifi_state", "play_volume_feedback",
-        # --- новое ---
         "get_users", "create_user", "delete_user", "update_user",
         "authenticate_user",
-        "get_theme", "set_theme",
+        "get_current_session", "set_current_session", "clear_session",
+        "get_theme", "set_theme", "goto_desktop",
     }
 
     def __init__(self, app_id: str, app_dir: Path, system_api: "SystemAPI"):
@@ -660,9 +917,6 @@ class AppBridge:
     def attach_window(self, window) -> None:
         self._window = window
 
-    # ----------------------------------------------------------
-    # Запуск бэкенда
-    # ----------------------------------------------------------
     def start_backend(self) -> None:
         backend = self.app_dir / "app_backend.py"
         if not backend.is_file():
@@ -702,9 +956,6 @@ class AppBridge:
                 except Exception:
                     pass
 
-    # ----------------------------------------------------------
-    # Чтение из бэкенда
-    # ----------------------------------------------------------
     def _read_stdout(self):
         try:
             for line in self._proc.stdout:
@@ -718,7 +969,6 @@ class AppBridge:
                 self._dispatch(msg)
         except Exception:
             pass
-        # Бэкенд умер — закрываем окно приложения
         self._on_backend_exit()
 
     def _read_stderr(self):
@@ -775,11 +1025,7 @@ class AppBridge:
         except Exception:
             pass
 
-    # ----------------------------------------------------------
-    # Методы, вызываемые из JS приложения через pywebview.api
-    # ----------------------------------------------------------
     def call(self, method: str, params: dict | None = None):
-        """UI приложения → его бэкенд. Возвращает ответ бэкенда."""
         if not self._proc or self._proc.poll() is not None:
             return {"ok": False, "error": "backend not running"}
 
@@ -800,7 +1046,6 @@ class AppBridge:
         return fut["result"]
 
     def get_app_info(self):
-        """Метаданные окна — UI может показать имя, версию и т.п."""
         try:
             mf = _read_json(self.app_dir / "manifest.json")
         except Exception:
@@ -811,7 +1056,6 @@ class AppBridge:
             "version": mf.get("version", "0.0.0"),
         }
 
-    # --- оконные операции для frameless-режима ---
     def window_move(self, x: int, y: int):
         if self._window:
             try:
@@ -846,7 +1090,7 @@ class AppBridge:
 
 
 # ==================================================================
-# AppManager — установка / список / запуск siamba-приложений
+# AppManager
 # ==================================================================
 class AppManager:
     def __init__(self, base_dir: Path, system_api: "SystemAPI"):
@@ -858,9 +1102,6 @@ class AppManager:
         self._bridges: dict[str, AppBridge] = {}
         self._lock = threading.RLock()
 
-    # ----------------------------------------------------------
-    # Установка .sht
-    # ----------------------------------------------------------
     def install_app(self, package_path: str) -> dict:
         p = Path(package_path)
         if not p.is_file():
@@ -868,7 +1109,6 @@ class AppManager:
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            # Безопасная распаковка: никаких ../ и абсолютных путей
             try:
                 with tarfile.open(p, "r:*") as tar:
                     for m in tar.getmembers():
@@ -907,9 +1147,6 @@ class AppManager:
 
         return {"ok": True, "app_id": app_id, "manifest": manifest}
 
-    # ----------------------------------------------------------
-    # Список установленных
-    # ----------------------------------------------------------
     def list_apps(self) -> list:
         out = []
         for entry in sorted(self.apps_dir.iterdir()):
@@ -924,7 +1161,6 @@ class AppManager:
                 continue
 
             app_id = mf.get("id") or entry.name
-
             icon_url = None
             icon = mf.get("icon")
             if icon:
@@ -935,7 +1171,7 @@ class AppManager:
             out.append({
                 "id":           app_id,
                 "kind":         "siamba",
-                "bin":          f"siamba:{app_id}",       # ключ состояния
+                "bin":          f"siamba:{app_id}",
                 "name":         mf.get("name", app_id),
                 "version":      mf.get("version", "0.0.0"),
                 "description":  mf.get("description", ""),
@@ -946,9 +1182,6 @@ class AppManager:
             })
         return out
 
-    # ----------------------------------------------------------
-    # Запуск приложения в отдельном окне
-    # ----------------------------------------------------------
     def launch_my_app(self, app_id: str) -> dict:
         with self._lock:
             if app_id in self._windows:
@@ -1018,9 +1251,6 @@ class AppManager:
         self.system_api._register_siamba_app(key, window)
         return {"ok": True, "app_id": app_id, "key": key}
 
-    # ----------------------------------------------------------
-    # Удаление
-    # ----------------------------------------------------------
     def uninstall_app(self, app_id: str) -> dict:
         with self._lock:
             if app_id in self._windows:
@@ -1034,301 +1264,54 @@ class AppManager:
         except OSError as e:
             return {"ok": False, "error": str(e)}
 
-        # ------------------------------------------------------------------
-        # Виртуальные пользователи SIamba (изолированы от Linux)
-        # ------------------------------------------------------------------
-        #
-        # Хранятся в BASE_DIR / "users" / "<username>". Никаких useradd/userdel —
-        # это чисто SIamba-сущности, у них своя иерархия папок и свой профиль.
-        #
-        # Структура:
-        #   users/
-        #     <username>/
-        #       profile.json    — name, display_name, password_hash, avatar, created
-        #       home/           — «домашняя папка» юзера (для будущих apps)
-        #       settings.json   — тема, обои и прочие преференсы
+    def shutdown_all(self) -> None:
+        """
+        Закрывает все siamba-окна. Используется при logout.
+        """
+        with self._lock:
+            wins = list(self._windows.values())
+            bridges = list(self._bridges.values())
+            self._windows.clear()
+            self._bridges.clear()
+            self.system_api._siamba_apps.clear()
 
-        USERNAME_RE = re.compile(r"^[a-z][a-z0-9_\-]{1,31}$")
-
-        @property
-        def _users_root(self) -> Path:
-            return Path(__file__).resolve().parent / "users"
-
-        @staticmethod
-        def _hash_password(password: str, salt: bytes | None = None) -> str:
-            """
-            PBKDF2-HMAC-SHA256, 200k итераций, соль 16 байт.
-            Формат строки: pbkdf2_sha256$<iters>$<salt_hex>$<hash_hex>
-            Без внешних зависимостей — только stdlib.
-            """
-            import hashlib
-            import hmac
-            import secrets
-
-            if salt is None:
-                salt = secrets.token_bytes(16)
-            iterations = 200_000
-            dk = hashlib.pbkdf2_hmac(
-                "sha256", password.encode("utf-8"), salt, iterations
-            )
-            return f"pbkdf2_sha256${iterations}${salt.hex()}${dk.hex()}"
-
-        @staticmethod
-        def _verify_password(password: str, stored: str) -> bool:
-            import hashlib
-            import hmac
-
+        for w in wins:
             try:
-                algo, iters, salt_hex, hash_hex = stored.split("$")
-                if algo != "pbkdf2_sha256":
-                    return False
-                dk = hashlib.pbkdf2_hmac(
-                    "sha256",
-                    password.encode("utf-8"),
-                    bytes.fromhex(salt_hex),
-                    int(iters),
-                )
-                return hmac.compare_digest(dk.hex(), hash_hex)
-            except Exception:
-                return False
-
-        def _user_dir(self, username: str) -> Path:
-            return self._users_root / username
-
-        def get_users(self) -> list[dict]:
-            """
-            Возвращает список виртуальных пользователей SIamba.
-            Пароли (даже хэши) наружу не отдаём — только метаданные.
-            """
-            root = self._users_root
-            if not root.is_dir():
-                return []
-
-            out: list[dict] = []
-            for entry in sorted(root.iterdir()):
-                if not entry.is_dir():
-                    continue
-                profile = entry / "profile.json"
-                if not profile.is_file():
-                    continue
-                try:
-                    data = _read_json(profile)
-                except Exception:
-                    continue
-
-                out.append({
-                    "username":     entry.name,
-                    "display_name": data.get("display_name") or entry.name,
-                    "avatar":       data.get("avatar"),  # путь или None
-                    "created":      data.get("created"),
-                })
-            return out
-
-        def create_user(self, username: str, password: str,
-                        display_name: str | None = None) -> dict:
-            """
-            Создаёт нового виртуального юзера.
-
-            Иерархия:
-                users/<username>/
-                    profile.json
-                    settings.json
-                    home/
-            """
-            if not isinstance(username, str) or not self.USERNAME_RE.match(username):
-                return {"ok": False,
-                        "error": "invalid username (a-z, 0-9, _, -, 2..32)"}
-
-            if not isinstance(password, str) or len(password) < 4:
-                return {"ok": False, "error": "password too short (min 4)"}
-
-            user_dir = self._user_dir(username)
-            if user_dir.exists():
-                return {"ok": False, "error": "user already exists"}
-
-            try:
-                (user_dir / "home").mkdir(parents=True, exist_ok=False)
-            except OSError as e:
-                return {"ok": False, "error": f"mkdir failed: {e}"}
-
-            try:
-                profile = {
-                    "username":      username,
-                    "display_name":  (display_name or username).strip(),
-                    "password_hash": self._hash_password(password),
-                    "avatar":        None,
-                    "created":       time.strftime("%Y-%m-%dT%H:%M:%S"),
-                }
-                settings = {
-                    "theme":      "dark",   # "dark" | "light"
-                    "wallpaper":  "aurora", # id обоев
-                    "locale":     "ru-RU",
-                }
-                (user_dir / "profile.json").write_text(
-                    json.dumps(profile, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                (user_dir / "settings.json").write_text(
-                    json.dumps(settings, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            except OSError as e:
-                # откатываем создание, чтобы не оставлять мусор
-                shutil.rmtree(user_dir, ignore_errors=True)
-                return {"ok": False, "error": f"write failed: {e}"}
-
-            _log(f"user created: {username}")
-            return {"ok": True, "username": username}
-
-        def delete_user(self, username: str) -> dict:
-            """
-            Удаляет виртуального юзера вместе со всей его иерархией.
-            """
-            if not isinstance(username, str) or not username:
-                return {"ok": False, "error": "empty username"}
-
-            user_dir = self._user_dir(username)
-            if not user_dir.is_dir():
-                return {"ok": False, "error": "user not found"}
-
-            # Защита: не даём случайно удалить сам корень users/
-            try:
-                if user_dir.resolve() == self._users_root.resolve():
-                    return {"ok": False, "error": "refusing to delete users root"}
+                w.destroy()
             except Exception:
                 pass
-
+        for b in bridges:
             try:
-                shutil.rmtree(user_dir)
-            except OSError as e:
-                return {"ok": False, "error": f"rmtree failed: {e}"}
-
-            _log(f"user deleted: {username}")
-            return {"ok": True}
-
-        def update_user(self, username: str, *,
-                        display_name: str | None = None,
-                        password: str | None = None) -> dict:
-            """
-            Меняет отображаемое имя и/или пароль виртуального юзера.
-            Хэш пароля наружу не отдаём никогда.
-            """
-            if not isinstance(username, str) or not username:
-                return {"ok": False, "error": "empty username"}
-
-            profile_path = self._user_dir(username) / "profile.json"
-            if not profile_path.is_file():
-                return {"ok": False, "error": "user not found"}
-
-            try:
-                profile = _read_json(profile_path)
-            except Exception as e:
-                return {"ok": False, "error": f"read failed: {e}"}
-
-            if display_name is not None:
-                dn = str(display_name).strip()
-                if not dn:
-                    return {"ok": False, "error": "empty display_name"}
-                profile["display_name"] = dn
-
-            if password is not None:
-                if len(password) < 4:
-                    return {"ok": False, "error": "password too short (min 4)"}
-                profile["password_hash"] = self._hash_password(password)
-
-            try:
-                profile_path.write_text(
-                    json.dumps(profile, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            except OSError as e:
-                return {"ok": False, "error": f"write failed: {e}"}
-
-            return {"ok": True}
-
-        def authenticate_user(self, username: str, password: str) -> dict:
-            """
-            Проверка пары логин/пароль. Нужна для будущего логин-скрина.
-            Сейчас используется в Settings для подтверждения смены пароля.
-            """
-            profile_path = self._user_dir(username) / "profile.json"
-            if not profile_path.is_file():
-                return {"ok": False, "error": "user not found"}
-            try:
-                profile = _read_json(profile_path)
-            except Exception as e:
-                return {"ok": False, "error": f"read failed: {e}"}
-
-            stored = profile.get("password_hash", "")
-            if self._verify_password(password, stored):
-                return {"ok": True}
-            return {"ok": False, "error": "wrong password"}
-
-        # ------------------------------------------------------------------
-        # Тема и обои (на уровне системы)
-        # ------------------------------------------------------------------
-        #
-        # Профиль темы хранится отдельно от юзеров — это «системная» настройка
-        # главного окна. Settings_app дёргает эти методы через proxy.
-
-        @property
-        def _theme_config_path(self) -> Path:
-            return Path(__file__).resolve().parent / "theme.json"
-
-        def get_theme(self) -> dict:
-            default = {
-                "theme":     "dark",      # "dark" | "light"
-                "wallpaper": "aurora",    # id обоев
-            }
-            try:
-                if self._theme_config_path.exists():
-                    data = _read_json(self._theme_config_path)
-                    if isinstance(data, dict):
-                        default.update({k: v for k, v in data.items()
-                                        if k in ("theme", "wallpaper")})
-            except Exception as e:
-                _log(f"theme config read failed: {type(e).__name__}: {e}")
-            return default
-
-        def set_theme(self, theme: str | None = None,
-                    wallpaper: str | None = None) -> dict:
-            cur = self.get_theme()
-            if theme in ("dark", "light"):
-                cur["theme"] = theme
-            if isinstance(wallpaper, str) and wallpaper:
-                cur["wallpaper"] = wallpaper
-
-            try:
-                self._theme_config_path.write_text(
-                    json.dumps(cur, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-            except OSError as e:
-                return {"ok": False, "error": str(e)}
-            return {"ok": True, **cur}
+                b.stop_backend()
+            except Exception:
+                pass
 
 
 # ==================================================================
 # Точка входа
 # ==================================================================
 def main() -> int:
-    if not UI_INDEX.exists():
-        _log(f"UI not found: {UI_INDEX}")
+    if not LOGIN_INDEX.exists():
+        _log(f"Login UI not found: {LOGIN_INDEX}")
         return 1
 
     api = SystemAPI()
     app_manager = AppManager(BASE_DIR, api)
     api.set_app_manager(app_manager)
 
-    webview.create_window(
+    # На старте открываем окно логина. После успешного входа JS попросит
+    # перевести окно на ui/index.html через api.goto_desktop().
+    window = webview.create_window(
         title=WINDOW_TITLE,
-        url=UI_INDEX.as_uri(),
+        url=LOGIN_INDEX.as_uri(),
         js_api=api,
         width=1920, height=1080,
         fullscreen=not DEV_MODE,
         min_size=(800, 480),
         frameless=True,
     )
+    api.set_main_window(window)
+
     webview.start(debug=DEVTOOLS)
     return 0
 

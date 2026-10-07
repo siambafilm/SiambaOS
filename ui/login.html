@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вход в SIamba OS</title>
+<link rel="stylesheet" href="login.css">
+</head>
+<body data-theme="dark">
+
+  <div class="wallpaper" id="wallpaper"></div>
+
+  <div class="login-stage" id="login-stage">
+
+    <!-- =========================================================
+         СОСТОЯНИЕ A: есть юзеры → экран входа
+         ========================================================= -->
+    <section class="screen screen-login" id="screen-login" hidden>
+      <div class="login-clock">
+        <div class="clock-time" id="login-time">--:--</div>
+        <div class="clock-date" id="login-date">—</div>
+      </div>
+
+      <div class="user-picker" id="user-picker"></div>
+
+      <div class="login-panel" id="login-panel" hidden>
+        <div class="avatar" id="login-avatar">?</div>
+        <div class="login-name" id="login-name">—</div>
+
+        <form class="login-form" id="login-form" autocomplete="off">
+          <div class="password-row" id="password-row">
+            <input type="password" id="login-password"
+                   placeholder="Пароль" autocomplete="current-password"
+                   spellcheck="false">
+          </div>
+          <button type="submit" class="btn primary" id="login-submit">
+            Войти
+          </button>
+          <div class="login-error" id="login-error" hidden></div>
+        </form>
+
+        <button class="link" id="login-back" type="button">
+          ← Другой пользователь
+        </button>
+      </div>
+    </section>
+
+    <!-- =========================================================
+         СОСТОЯНИЕ B: нет юзеров → создание первого
+         ========================================================= -->
+    <section class="screen screen-first" id="screen-first" hidden>
+      <div class="first-card">
+        <h1>Добро пожаловать в SIamba OS</h1>
+        <p>Пока не создан ни один пользователь. Создайте первого,
+           чтобы начать работу.</p>
+
+        <form class="first-form" id="first-form" autocomplete="off">
+          <div class="field">
+            <label>Имя пользователя (логин)</label>
+            <input type="text" id="first-username"
+                   placeholder="например, alice" autocomplete="off"
+                   spellcheck="false">
+          </div>
+          <div class="field">
+            <label>Отображаемое имя</label>
+            <input type="text" id="first-display"
+                   placeholder="Alice Ivanova" autocomplete="off">
+          </div>
+
+          <label class="check">
+            <input type="checkbox" id="first-require-pwd" checked>
+            <span>Запрашивать пароль при входе</span>
+          </label>
+
+          <div class="field" id="first-pwd-field">
+            <label>Пароль</label>
+            <input type="password" id="first-password"
+                   placeholder="минимум 4 символа"
+                   autocomplete="new-password">
+          </div>
+
+          <div class="login-error" id="first-error" hidden></div>
+
+          <button type="submit" class="btn primary">
+            Создать и войти
+          </button>
+        </form>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="power-bar">
+    <button class="pwr-btn" id="pwr-reboot" title="Перезагрузить">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="23 4 23 10 17 10"/>
+        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+      </svg>
+    </button>
+    <button class="pwr-btn" id="pwr-shutdown" title="Выключить">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+        <line x1="12" y1="2" x2="12" y2="12"/>
+      </svg>
+    </button>
+  </div>
+
+  <script src="login.js"></script>
+</body>
+</html>

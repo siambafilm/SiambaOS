@@ -8,6 +8,5 @@
   "gnome-calendar",
   "gnome-control-center",
   "nautilus",
-  "siamba:notes_app",
-  "siamba:hello_app"
+  "siamba:notes_app"
 ]

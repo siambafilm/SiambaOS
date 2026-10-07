@@ -75,15 +75,33 @@
   /* ================================================================
      Общее состояние
      ================================================================ */
-  const state = {
+    const state = {
     running:  new Set(),
     active:   null,
     allApps:  [],       // из scan_linux_apps() + list_my_apps()
-    dock:     [],       // список bin из конфига
+    dock:     [],       // список bin из конфига (закреплённые)
     linuxApps:  [],
     siambaApps: [],
     appsReady: false,
   };
+
+  // Хелпер: какие bin должны быть видны в доке прямо сейчас.
+  // = закреплённые (state.dock) ∪ запущенные siamba-приложения.
+  function visibleDockItems() {
+    const pinned = state.dock;
+    const pinnedSet = new Set(pinned);
+
+    const transient = [];
+    for (const key of state.running) {
+      if (!key.startsWith('siamba:')) continue;    // linux-приложения не подтягиваем
+      if (pinnedSet.has(key)) continue;
+      // Только те siamba-приложения, которые реально установлены —
+      // иначе останется мусорная иконка после удаления.
+      const app = state.siambaApps.find(a => a.bin === key || `siamba:${a.id}` === key);
+      if (app) transient.push(key);
+    }
+    return [...pinned, ...transient];
+  }
 
   let dockItems = [];   // .dock-item[data-app]
   let dockIcons = [];   // их .dock-icon
@@ -135,15 +153,30 @@
   /* ================================================================
      5. Состояние приложений (поллинг)
      ================================================================ */
-  function applyRunningSet(newSet) {
+    function applyRunningSet(newSet) {
+    // 1) Если набор запущенных изменился — пересобираем док, потому что
+    //    временные (незакреплённые) siamba-приложения должны появляться
+    //    и исчезать в доке автоматически.
+    const sameAsBefore =
+      newSet.size === state.running.size &&
+      [...newSet].every(x => state.running.has(x));
+
+    state.running = newSet;
+
+    if (!sameAsBefore) {
+      renderDock();
+    }
+
+    // 2) Обновляем точки активности на уже отрисованных иконках.
     dockItems.forEach(it => {
       const aid = it.dataset.app;
       it.dataset.running = newSet.has(aid) ? 'true' : 'false';
     });
+
+    // 3) active мог указывать на приложение, которое только что закрылось.
     if (!state.active || !newSet.has(state.active)) {
       state.active = newSet.values().next().value || null;
     }
-    state.running = newSet;
     refreshActiveName();
   }
 
@@ -283,16 +316,33 @@
     item.appendChild(dot);
 
     item.addEventListener('click', () => launchOrFocus(bin));
-    item.addEventListener('contextmenu', (e) => {
+        item.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      showContextMenu(e.clientX, e.clientY, [
-        {
+
+      const isPinned = state.dock.includes(bin);
+      const isRunning = state.running.has(bin);
+
+      const items = [];
+
+      if (isPinned) {
+        items.push({
           label: 'Убрать из дока',
           danger: true,
           action: () => removeFromDock(bin),
-        },
-      ]);
+        });
+      } else if (isRunning) {
+        items.push({
+          label: 'Закрепить в доке',
+          action: () => addToDock(bin),
+        });
+      }
+
+      // Если это временная иконка и юзер не закрепил — меню будет пустым.
+      // В этом случае просто не показываем его.
+      if (!items.length) return;
+
+      showContextMenu(e.clientX, e.clientY, items);
     });
 
     return item;
@@ -316,14 +366,16 @@
     return item;
   }
 
-  function renderDock() {
+    function renderDock() {
     el.dock.innerHTML = '';
 
-    for (const bin of state.dock) {
+    const items = visibleDockItems();
+
+    for (const bin of items) {
       el.dock.appendChild(createDockItem(bin));
     }
 
-    if (state.dock.length) {
+    if (items.length) {
       const divider = document.createElement('div');
       divider.className = 'dock-divider';
       el.dock.appendChild(divider);
@@ -339,10 +391,9 @@
     dockIcons = Array.from(el.dock.querySelectorAll('.dock-item .dock-icon'));
   }
 
-  async function saveDock(newList) {
+    async function saveDock(newList) {
     const a = api();
 
-    // 1. Сначала сохраняем на бэкенде, только потом обновляем UI
     if (!a || typeof a.set_dock_config !== 'function') {
       console.warn('[SIamba OS] set_dock_config недоступен — док не сохранится');
       showToast('Бэкенд не сохранит док: нет set_dock_config');
@@ -365,9 +416,11 @@
       return;
     }
 
-    // 2. Бэкенд подтвердил — можно применять к UI
+    // Бэкенд подтвердил — обновляем закреплённые и пересобираем док
+    // (в него входят и временные иконки запущенных приложений).
     state.dock = newList;
     renderDock();
+    // Точки активности надо восстановить — renderDock пересоздаёт DOM.
     applyRunningSet(state.running);
 
     console.log('[SIamba OS] dock saved:', newList);
@@ -427,7 +480,7 @@
   /* ================================================================
      9. Запуск / фокус
      ================================================================ */
-  async function launchMyApp(app) {
+    async function launchMyApp(app) {
     const a = api();
     if (!a || typeof a.launch_my_app !== 'function') {
       showToast('Бэкенд не поддерживает запуск приложений');
@@ -439,7 +492,8 @@
         showToast(`Не удалось запустить ${app.name}: ${res && res.error || '?'}`);
         return;
       }
-      // Оптимистично помечаем запущенным
+      // Оптимистично помечаем запущенным — док тут же подхватит
+      // временную иконку, если приложение не закреплено.
       const s = new Set(state.running);
       s.add(app.bin || `siamba:${app.id}`);
       applyRunningSet(s);

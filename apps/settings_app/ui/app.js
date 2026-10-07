@@ -82,12 +82,29 @@
   /* ---------------------------------------------------------------
      Пользователи
      --------------------------------------------------------------- */
-  async function refreshUsers() {
+    async function refreshUsers() {
     let res;
     try { res = await call('users.list'); }
-    catch (e) { showToast('Ошибка: ' + e.message); return; }
+    catch (e) {
+      console.error('[settings] users.list threw:', e);
+      showToast('Ошибка связи с бэкендом: ' + e.message);
+      return;
+    }
 
-    const users = (res && res.users) || [];
+    console.log('[settings] users.list response:', res);
+
+    // Если бэкенд явно вернул ошибку — показываем её, не прячем.
+    if (!res || res.ok === false) {
+      const err = (res && res.error) || 'unknown error';
+      console.error('[settings] users.list failed:', err);
+      showToast('Не удалось получить пользователей: ' + err);
+      el.accountsEmpty.hidden = false;
+      el.accountsMain.hidden  = true;
+      return;
+    }
+
+    const users = Array.isArray(res.users) ? res.users : [];
+    console.log('[settings] user count:', users.length);
 
     if (!users.length) {
       el.accountsEmpty.hidden = false;
@@ -161,7 +178,7 @@
     if (e.key === 'Escape' && !el.modalOverlay.hidden) closeModal();
   });
 
-    function openCreateUserModal() {
+      function openCreateUserModal() {
     openModal({
       title: 'Новый пользователь',
       bodyHTML: `
@@ -190,37 +207,48 @@
         {
           label: 'Создать', variant: 'primary',
           onClick: async () => {
-            const username = el.modalBody.querySelector('#m-username').value.trim();
-            const display  = el.modalBody.querySelector('#m-display').value.trim();
-            const require  = el.modalBody.querySelector('#m-require').checked;
-            const password = require
-              ? el.modalBody.querySelector('#m-password').value
-              : '';
-
-            if (!username) { showToast('Введите логин'); return; }
-            if (require && password.length < 4) {
-              showToast('Пароль минимум 4 символа'); return;
-            }
-
-            let res;
             try {
-              res = await call('users.create', {
-                username,
-                password,
-                display_name: display || username,
-                require_password: require,
-              });
-            } catch (e) { showToast('Ошибка: ' + e.message); return; }
+              const username = el.modalBody.querySelector('#m-username').value.trim();
+              const display  = el.modalBody.querySelector('#m-display').value.trim();
+              const require  = el.modalBody.querySelector('#m-require').checked;
+              const password = require
+                ? el.modalBody.querySelector('#m-password').value
+                : '';
 
-            if (!res || !res.ok) {
-              showToast('Не удалось создать: ' + ((res && res.error) || '?'));
-              return;
+              if (!username) { showToast('Введите логин'); return; }
+              if (require && password.length < 4) {
+                showToast('Пароль минимум 4 символа'); return;
+              }
+
+              let res;
+              try {
+                res = await call('users.create', {
+                  username,
+                  password,
+                  display_name: display || username,
+                  require_password: require,
+                });
+              } catch (e) {
+                console.error('[settings] users.create threw:', e);
+                showToast('Ошибка связи с бэкендом: ' + e.message);
+                return;
+              }
+
+              console.log('[settings] users.create response:', res);
+
+              if (!res || !res.ok) {
+                showToast('Не удалось создать: ' + ((res && res.error) || '?'));
+                return;
+              }
+              closeModal();
+              showToast(require
+                ? `Пользователь «${username}» создан`
+                : `Пользователь «${username}» создан без пароля`);
+              refreshUsers();
+            } catch (err) {
+              console.error('[settings] create handler crashed:', err);
+              showToast('Внутренняя ошибка: ' + err.message);
             }
-            closeModal();
-            showToast(require
-              ? `Пользователь «${username}» создан`
-              : `Пользователь «${username}» создан без пароля`);
-            refreshUsers();
           },
         },
       ],
@@ -239,9 +267,7 @@
     setTimeout(() => el.modalBody.querySelector('#m-username').focus(), 40);
   }
 
-  function openEditUserModal(u) {
-    // Если поле не пришло (старый юзер, созданный до фичи) — считаем,
-    // что пароль требовался.
+    function openEditUserModal(u) {
     const requireInitial = u.require_password !== false;
 
     openModal({
@@ -270,42 +296,54 @@
         {
           label: 'Сохранить', variant: 'primary',
           onClick: async () => {
-            const display  = el.modalBody.querySelector('#m-display').value.trim();
-            const require  = el.modalBody.querySelector('#m-require').checked;
-            const password = require
-              ? el.modalBody.querySelector('#m-password').value
-              : '';
+            try {
+              const display  = el.modalBody.querySelector('#m-display').value.trim();
+              const require  = el.modalBody.querySelector('#m-require').checked;
+              const password = require
+                ? el.modalBody.querySelector('#m-password').value
+                : '';
 
-            const params = { username: u.username };
+              const params = { username: u.username };
 
-            if (display && display !== (u.display_name || '')) {
-              params.display_name = display;
-            }
-            if (password) {
-              if (password.length < 4) {
-                showToast('Пароль минимум 4 символа'); return;
+              if (display && display !== (u.display_name || '')) {
+                params.display_name = display;
               }
-              params.password = password;
-            }
-            if (require !== requireInitial) {
-              params.require_password = require;
-            }
+              if (password) {
+                if (password.length < 4) {
+                  showToast('Пароль минимум 4 символа'); return;
+                }
+                params.password = password;
+              }
+              if (require !== requireInitial) {
+                params.require_password = require;
+              }
 
-            if (Object.keys(params).length === 1) {
-              closeModal(); return;
-            }
+              if (Object.keys(params).length === 1) {
+                closeModal(); return;
+              }
 
-            let res;
-            try { res = await call('users.update', params); }
-            catch (e) { showToast('Ошибка: ' + e.message); return; }
+              let res;
+              try {
+                res = await call('users.update', params);
+              } catch (e) {
+                console.error('[settings] users.update threw:', e);
+                showToast('Ошибка связи с бэкендом: ' + e.message);
+                return;
+              }
 
-            if (!res || !res.ok) {
-              showToast('Не удалось сохранить: ' + ((res && res.error) || '?'));
-              return;
+              console.log('[settings] users.update response:', res);
+
+              if (!res || !res.ok) {
+                showToast('Не удалось сохранить: ' + ((res && res.error) || '?'));
+                return;
+              }
+              closeModal();
+              showToast('Изменения сохранены');
+              refreshUsers();
+            } catch (err) {
+              console.error('[settings] update handler crashed:', err);
+              showToast('Внутренняя ошибка: ' + err.message);
             }
-            closeModal();
-            showToast('Изменения сохранены');
-            refreshUsers();
           },
         },
       ],
@@ -318,7 +356,7 @@
     });
   }
 
-  function confirmDeleteUser(u) {
+    function confirmDeleteUser(u) {
     openModal({
       title: 'Удалить пользователя?',
       bodyHTML: `<p>Пользователь <b>${escapeHtml(u.display_name || u.username)}</b>
@@ -329,16 +367,29 @@
         {
           label: 'Удалить', variant: 'danger',
           onClick: async () => {
-            let res;
-            try { res = await call('users.delete', { username: u.username }); }
-            catch (e) { showToast('Ошибка: ' + e.message); return; }
-            if (!res || !res.ok) {
-              showToast('Не удалось удалить: ' + ((res && res.error) || '?'));
-              return;
+            try {
+              let res;
+              try {
+                res = await call('users.delete', { username: u.username });
+              } catch (e) {
+                console.error('[settings] users.delete threw:', e);
+                showToast('Ошибка связи с бэкендом: ' + e.message);
+                return;
+              }
+
+              console.log('[settings] users.delete response:', res);
+
+              if (!res || !res.ok) {
+                showToast('Не удалось удалить: ' + ((res && res.error) || '?'));
+                return;
+              }
+              closeModal();
+              showToast('Пользователь удалён');
+              refreshUsers();
+            } catch (err) {
+              console.error('[settings] delete handler crashed:', err);
+              showToast('Внутренняя ошибка: ' + err.message);
             }
-            closeModal();
-            showToast('Пользователь удалён');
-            refreshUsers();
           },
         },
       ],

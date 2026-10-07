@@ -59,14 +59,14 @@ class SystemAPI:
         self._lock = threading.RLock()
         self._apps_cache: tuple[float, list[dict]] | None = None
         self._apps_cache_ttl = 60.0
-        self._dock_config_path = BASE_DIR / "dock.json"
-        self._users_root = BASE_DIR / "users"
+        self._dock_config_path  = BASE_DIR / "dock.json"
+        self._users_root        = BASE_DIR / "users"
         self._theme_config_path = BASE_DIR / "theme.json"
-        self._session_path = BASE_DIR / "session.json"
+        self._session_path      = BASE_DIR / "session.json"
 
         self._siamba_apps: dict[str, object] = {}
         self._app_manager = None
-        self._main_window = None   # ссылка на главное окно (для logout)
+        self._main_window = None
 
         threading.Thread(target=self._watch_loop, daemon=True).start()
 
@@ -85,7 +85,6 @@ class SystemAPI:
             return None
 
     def set_main_window(self, window):
-        """Ссылка на главное окно. Нужна для logout / перехода на login."""
         self._main_window = window
 
     # ------------------------------------------------------------------
@@ -95,7 +94,6 @@ class SystemAPI:
         def _out(args):
             r = self._run(args, timeout=2)
             return r.stdout.strip() if r and r.returncode == 0 else "n/a"
-
         return {
             "user":       _out(["whoami"]),
             "kernel":     _out(["uname", "-r"]),
@@ -121,7 +119,6 @@ class SystemAPI:
     def launch_app(self, app_id: str, exec_cmd: str | None = None) -> dict:
         if not app_id or not isinstance(app_id, str):
             return {"ok": False, "error": "empty app_id"}
-
         with self._lock:
             if self._is_running_locked(app_id):
                 return {"ok": True, "already_running": True}
@@ -136,8 +133,7 @@ class SystemAPI:
 
         try:
             proc = subprocess.Popen(
-                argv,
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True, close_fds=True,
             )
@@ -150,9 +146,7 @@ class SystemAPI:
 
         with self._lock:
             self._apps[app_id] = {
-                "proc": proc,
-                "started_at": time.time(),
-                "argv": argv,
+                "proc": proc, "started_at": time.time(), "argv": argv,
             }
         return {"ok": True, "pid": proc.pid}
 
@@ -167,21 +161,17 @@ class SystemAPI:
         info = self._apps.get(app_id)
         if not info:
             return False
-
         proc: subprocess.Popen = info["proc"]
         if proc.poll() is None:
             return True
-
         age = time.time() - info.get("started_at", 0)
         if age < FORK_GRACE:
             return True
-
         argv = info.get("argv") or [app_id]
         try:
             name = Path(argv[0]).name
         except Exception:
             return False
-
         r = self._run(["pgrep", "-x", name], timeout=1)
         return bool(r and r.returncode == 0 and r.stdout.strip())
 
@@ -224,37 +214,24 @@ class SystemAPI:
             return {"ok": False, "error": str(e)}
 
     # ------------------------------------------------------------------
-    # Выход из системы (logout)
+    # Выход из системы и переходы между экранами
     # ------------------------------------------------------------------
     def logout(self) -> dict:
-        """
-        Закрывает все siamba-окна, сбрасывает сессию и переводит
-        главное окно обратно на логин-экран.
-        """
-        # 1) Закрыть дочерние окна
         if self._app_manager:
             try:
                 self._app_manager.shutdown_all()
             except Exception as e:
                 _log(f"shutdown_all failed: {e}")
-
-        # 2) Сбросить активного пользователя
         self.clear_session()
-
-        # 3) Перевести главное окно на логин-экран
         if self._main_window is not None:
             try:
                 self._main_window.load_url(LOGIN_INDEX.as_uri())
             except Exception as e:
                 _log(f"load_url(login) failed: {e}")
-
+                return {"ok": False, "error": str(e)}
         return {"ok": True}
 
     def goto_desktop(self) -> dict:
-        """
-        Переводит главное окно на рабочий стол.
-        Вызывается из login.js после успешной аутентификации.
-        """
         if self._main_window is not None:
             try:
                 self._main_window.load_url(UI_INDEX.as_uri())
@@ -301,13 +278,12 @@ class SystemAPI:
                       timeout=2)
         if r is not None and r.returncode == 0:
             return {"ok": True, "via": "canberra"}
-        candidates = [
+        for path in [
             "/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga",
             "/usr/share/sounds/freedesktop/stereo/bell.oga",
             "/usr/share/sounds/gnome/default/alerts/glass.ogg",
             "/usr/share/sounds/linuxmint/stereo/audio-volume-change.oga",
-        ]
-        for path in candidates:
+        ]:
             if Path(path).exists():
                 r = self._run(["paplay", path], timeout=2)
                 if r is not None and r.returncode == 0:
@@ -346,8 +322,7 @@ class SystemAPI:
         for line in r.stdout.splitlines():
             if not line.strip():
                 if current:
-                    records.append(current)
-                    current = {}
+                    records.append(current); current = {}
                 continue
             if ":" in line:
                 k, v = line.split(":", 1)
@@ -397,7 +372,7 @@ class SystemAPI:
                 "error": (r.stderr or r.stdout or "connect failed").strip()}
 
     # ------------------------------------------------------------------
-    # Сканирование приложений
+    # Сканирование Linux-приложений
     # ------------------------------------------------------------------
     def scan_linux_apps(self) -> list[dict]:
         now = time.time()
@@ -599,16 +574,14 @@ class SystemAPI:
             self._siamba_apps.pop(key, None)
 
     # ==================================================================
-    # ВИРТУАЛЬНЫЕ ПОЛЬЗОВАТЕЛИ SIAMBA (изолированы от Linux)
+    # ВИРТУАЛЬНЫЕ ПОЛЬЗОВАТЕЛИ SIAMBA
     # ==================================================================
     #
-    # Структура:
-    #   users/
-    #     <username>/
-    #       profile.json    — username, display_name, password_hash,
-    #                         require_password, avatar, created
-    #       settings.json   — theme, wallpaper, locale
-    #       home/
+    # users/<username>/
+    #     profile.json    — username, display_name, password_hash,
+    #                       require_password, avatar, created
+    #     settings.json   — theme, wallpaper, locale
+    #     home/
 
     @staticmethod
     def _hash_password(password: str, salt: bytes | None = None) -> str:
@@ -627,10 +600,8 @@ class SystemAPI:
             if algo != "pbkdf2_sha256":
                 return False
             dk = hashlib.pbkdf2_hmac(
-                "sha256",
-                password.encode("utf-8"),
-                bytes.fromhex(salt_hex),
-                int(iters),
+                "sha256", password.encode("utf-8"),
+                bytes.fromhex(salt_hex), int(iters),
             )
             return hmac.compare_digest(dk.hex(), hash_hex)
         except Exception:
@@ -640,10 +611,6 @@ class SystemAPI:
         return self._users_root / username
 
     def get_users(self) -> list[dict]:
-        """
-        Список виртуальных юзеров. Хэши паролей наружу не отдаём —
-        только флаг require_password.
-        """
         root = self._users_root
         if not root.is_dir():
             return []
@@ -672,11 +639,6 @@ class SystemAPI:
     def create_user(self, username: str, password: str = "",
                     display_name: str | None = None,
                     require_password: bool = True) -> dict:
-        """
-        Создаёт виртуального юзера.
-        require_password=True  → пароль обязателен, храним хэш.
-        require_password=False → пароль не спрашивается, hash = "".
-        """
         if not isinstance(username, str) or not self.USERNAME_RE.match(username):
             return {"ok": False,
                     "error": "invalid username (a-z, 0-9, _, -, 2..32)"}
@@ -708,11 +670,7 @@ class SystemAPI:
                 "avatar":           None,
                 "created":          time.strftime("%Y-%m-%dT%H:%M:%S"),
             }
-            settings = {
-                "theme":     "dark",
-                "wallpaper": "aurora",
-                "locale":    "ru-RU",
-            }
+            settings = {"theme": "dark", "wallpaper": "aurora", "locale": "ru-RU"}
             (user_dir / "profile.json").write_text(
                 json.dumps(profile, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -731,22 +689,18 @@ class SystemAPI:
     def delete_user(self, username: str) -> dict:
         if not isinstance(username, str) or not username:
             return {"ok": False, "error": "empty username"}
-
         user_dir = self._user_dir(username)
         if not user_dir.is_dir():
             return {"ok": False, "error": "user not found"}
-
         try:
             if user_dir.resolve() == self._users_root.resolve():
                 return {"ok": False, "error": "refusing to delete users root"}
         except Exception:
             pass
-
         try:
             shutil.rmtree(user_dir)
         except OSError as e:
             return {"ok": False, "error": f"rmtree failed: {e}"}
-
         _log(f"user deleted: {username}")
         return {"ok": True}
 
@@ -754,12 +708,6 @@ class SystemAPI:
                     display_name: str | None = None,
                     password: str | None = None,
                     require_password: bool | None = None) -> dict:
-        """
-        Меняет отображаемое имя, пароль и/или режим require_password.
-        Если require_password становится True и пароль не задан явно —
-        считаем, что пароль должен быть уже в профиле. Если его нет,
-        вернём ошибку.
-        """
         if not isinstance(username, str) or not username:
             return {"ok": False, "error": "empty username"}
 
@@ -782,7 +730,6 @@ class SystemAPI:
             if len(password) < 4:
                 return {"ok": False, "error": "password too short (min 4)"}
             profile["password_hash"] = self._hash_password(password)
-            # задать пароль → включаем требование пароля
             profile["require_password"] = True
 
         if require_password is not None:
@@ -799,14 +746,9 @@ class SystemAPI:
             )
         except OSError as e:
             return {"ok": False, "error": f"write failed: {e}"}
-
         return {"ok": True}
 
     def authenticate_user(self, username: str, password: str = "") -> dict:
-        """
-        Проверка пары логин/пароль.
-        Если у юзера require_password=False — пускаем без пароля.
-        """
         profile_path = self._user_dir(username) / "profile.json"
         if not profile_path.is_file():
             return {"ok": False, "error": "user not found"}
@@ -824,7 +766,7 @@ class SystemAPI:
         return {"ok": False, "error": "wrong password"}
 
     # ------------------------------------------------------------------
-    # Сессия (кто сейчас залогинен)
+    # Сессия
     # ------------------------------------------------------------------
     def get_current_session(self) -> dict:
         try:
@@ -859,7 +801,7 @@ class SystemAPI:
         return {"ok": True}
 
     # ------------------------------------------------------------------
-    # Тема и обои (системная настройка)
+    # Тема и обои
     # ------------------------------------------------------------------
     def get_theme(self) -> dict:
         default = {"theme": "dark", "wallpaper": "aurora"}
@@ -901,7 +843,7 @@ class AppBridge:
         "get_users", "create_user", "delete_user", "update_user",
         "authenticate_user",
         "get_current_session", "set_current_session", "clear_session",
-        "get_theme", "set_theme", "goto_desktop",
+        "get_theme", "set_theme",
     }
 
     def __init__(self, app_id: str, app_dir: Path, system_api: "SystemAPI"):
@@ -921,10 +863,9 @@ class AppBridge:
         backend = self.app_dir / "app_backend.py"
         if not backend.is_file():
             return
-
         env = os.environ.copy()
-        env["SIAMBA_APP_ID"] = self.app_id
-        env["SIAMBA_APP_DIR"] = str(self.app_dir)
+        env["SIAMBA_APP_ID"]   = self.app_id
+        env["SIAMBA_APP_DIR"]  = str(self.app_dir)
         env["SIAMBA_APP_DATA"] = str(
             Path.home() / ".local" / "share" / "siamba-os" / "apps" / self.app_id
         )
@@ -934,9 +875,7 @@ class AppBridge:
         self._proc = subprocess.Popen(
             [sys.executable, str(backend)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1,
-            cwd=str(self.app_dir),
-            env=env,
+            text=True, bufsize=1, cwd=str(self.app_dir), env=env,
             start_new_session=True, close_fds=True,
         )
         threading.Thread(target=self._read_stdout, daemon=True).start()
@@ -948,13 +887,10 @@ class AppBridge:
             self._proc = None
         if proc and proc.poll() is None:
             try:
-                proc.terminate()
-                proc.wait(timeout=2)
+                proc.terminate(); proc.wait(timeout=2)
             except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
+                try: proc.kill()
+                except Exception: pass
 
     def _read_stdout(self):
         try:
@@ -1001,6 +937,12 @@ class AppBridge:
 
         try:
             fn = getattr(self.system_api, method)
+        except AttributeError:
+            self._send({"type": "proxy_response", "id": req_id,
+                        "error": f"SystemAPI has no method: {method}"})
+            return
+
+        try:
             result = fn(**params) if isinstance(params, dict) else fn(*params)
             self._send({"type": "proxy_response", "id": req_id, "result": result})
         except Exception as e:
@@ -1028,18 +970,14 @@ class AppBridge:
     def call(self, method: str, params: dict | None = None):
         if not self._proc or self._proc.poll() is not None:
             return {"ok": False, "error": "backend not running"}
-
         with self._io_lock:
             req_id = self._next_id
             self._next_id += 1
-
         evt = threading.Event()
         fut = {"event": evt, "result": None}
         self._pending[req_id] = fut
-
         self._send({"type": "call", "id": req_id,
                     "method": method, "params": params or {}})
-
         if not evt.wait(timeout=20):
             self._pending.pop(req_id, None)
             return {"ok": False, "error": "backend timeout"}
@@ -1050,18 +988,14 @@ class AppBridge:
             mf = _read_json(self.app_dir / "manifest.json")
         except Exception:
             mf = {}
-        return {
-            "id":      self.app_id,
-            "name":    mf.get("name", self.app_id),
-            "version": mf.get("version", "0.0.0"),
-        }
+        return {"id": self.app_id,
+                "name": mf.get("name", self.app_id),
+                "version": mf.get("version", "0.0.0")}
 
-    def window_move(self, x: int, y: int):
+    def window_move(self, x, y):
         if self._window:
-            try:
-                self._window.move(int(x), int(y))
-            except Exception:
-                pass
+            try: self._window.move(int(x), int(y))
+            except Exception: pass
         return {"ok": True}
 
     def window_get_position(self):
@@ -1074,18 +1008,14 @@ class AppBridge:
 
     def window_minimize(self):
         if self._window:
-            try:
-                self._window.minimize()
-            except Exception:
-                pass
+            try: self._window.minimize()
+            except Exception: pass
         return {"ok": True}
 
     def window_close(self):
         if self._window:
-            try:
-                self._window.destroy()
-            except Exception:
-                pass
+            try: self._window.destroy()
+            except Exception: pass
         return {"ok": True}
 
 
@@ -1106,7 +1036,6 @@ class AppManager:
         p = Path(package_path)
         if not p.is_file():
             return {"ok": False, "error": "file not found"}
-
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             try:
@@ -1123,28 +1052,22 @@ class AppManager:
                                key=lambda x: len(x.parts))
             if not manifests:
                 return {"ok": False, "error": "manifest.json not found"}
-
             manifest_path = manifests[0]
             app_root = manifest_path.parent
-
             try:
                 manifest = _read_json(manifest_path)
             except Exception as e:
                 return {"ok": False, "error": f"bad manifest: {e}"}
-
             app_id = (manifest.get("id") or "").strip()
             if not re.match(r"^[a-z0-9_\-]{2,64}$", app_id):
                 return {"ok": False, "error": "invalid id (a-z 0-9 _ -, 2..64)"}
-
             for key in ("name", "version"):
                 if not manifest.get(key):
                     return {"ok": False, "error": f"manifest missing '{key}'"}
-
             target = self.apps_dir / app_id
             if target.exists():
                 shutil.rmtree(target)
             shutil.move(str(app_root), str(target))
-
         return {"ok": True, "app_id": app_id, "manifest": manifest}
 
     def list_apps(self) -> list:
@@ -1159,7 +1082,6 @@ class AppManager:
                 mf = _read_json(mf_path)
             except Exception:
                 continue
-
             app_id = mf.get("id") or entry.name
             icon_url = None
             icon = mf.get("icon")
@@ -1167,7 +1089,6 @@ class AppManager:
                 icon_file = entry / icon
                 if icon_file.is_file():
                     icon_url = icon_file.as_uri()
-
             out.append({
                 "id":           app_id,
                 "kind":         "siamba",
@@ -1195,41 +1116,35 @@ class AppManager:
         app_dir = self.apps_dir / app_id
         if not app_dir.is_dir():
             return {"ok": False, "error": "app not installed"}
-
         manifest_path = app_dir / "manifest.json"
         ui_index      = app_dir / "ui" / "index.html"
         if not ui_index.is_file():
             return {"ok": False, "error": "ui/index.html missing"}
-
         try:
             mf = _read_json(manifest_path)
         except Exception as e:
             return {"ok": False, "error": f"bad manifest: {e}"}
 
         win_cfg = mf.get("window") or {}
-
         bridge = AppBridge(app_id, app_dir, self.system_api)
         bridge.start_backend()
 
         try:
             window = webview.create_window(
-                title      = mf.get("name", app_id),
-                url        = ui_index.as_uri(),
-                js_api     = bridge,
-                width      = int(win_cfg.get("width", 900)),
-                height     = int(win_cfg.get("height", 600)),
-                x          = win_cfg.get("x"),
-                y          = win_cfg.get("y"),
-                min_size   = (420, 320),
-                frameless  = True,
-                background_color = win_cfg.get("background", "#14141c"),
+                title=mf.get("name", app_id),
+                url=ui_index.as_uri(),
+                js_api=bridge,
+                width=int(win_cfg.get("width", 900)),
+                height=int(win_cfg.get("height", 600)),
+                x=win_cfg.get("x"), y=win_cfg.get("y"),
+                min_size=(420, 320), frameless=True,
+                background_color=win_cfg.get("background", "#14141c"),
             )
         except Exception as e:
             bridge.stop_backend()
             return {"ok": False, "error": str(e)}
 
         bridge.attach_window(window)
-
         key = f"siamba:{app_id}"
 
         def on_closed():
@@ -1247,7 +1162,6 @@ class AppManager:
         with self._lock:
             self._windows[app_id] = window
             self._bridges[app_id] = bridge
-
         self.system_api._register_siamba_app(key, window)
         return {"ok": True, "app_id": app_id, "key": key}
 
@@ -1265,26 +1179,19 @@ class AppManager:
             return {"ok": False, "error": str(e)}
 
     def shutdown_all(self) -> None:
-        """
-        Закрывает все siamba-окна. Используется при logout.
-        """
+        """Закрывает все siamba-окна. Используется при logout."""
         with self._lock:
-            wins = list(self._windows.values())
+            wins    = list(self._windows.values())
             bridges = list(self._bridges.values())
             self._windows.clear()
             self._bridges.clear()
             self.system_api._siamba_apps.clear()
-
         for w in wins:
-            try:
-                w.destroy()
-            except Exception:
-                pass
+            try: w.destroy()
+            except Exception: pass
         for b in bridges:
-            try:
-                b.stop_backend()
-            except Exception:
-                pass
+            try: b.stop_backend()
+            except Exception: pass
 
 
 # ==================================================================
@@ -1299,8 +1206,6 @@ def main() -> int:
     app_manager = AppManager(BASE_DIR, api)
     api.set_app_manager(app_manager)
 
-    # На старте открываем окно логина. После успешного входа JS попросит
-    # перевести окно на ui/index.html через api.goto_desktop().
     window = webview.create_window(
         title=WINDOW_TITLE,
         url=LOGIN_INDEX.as_uri(),

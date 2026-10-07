@@ -6,7 +6,7 @@
   "rhythmbox",
   "eog",
   "gnome-calendar",
-  "gnome-control-center",
   "nautilus",
-  "siamba:notes_app"
+  "siamba:notes_app",
+  "siamba:settings_app"
 ]

@@ -7,6 +7,12 @@ siamba_runtime — минимальный JSON-RPC-рантайм для бэк�
 
   App → родитель: {"type":"proxy","id":M,"method":"name","params":{...}}
   Родитель → app: {"type":"proxy_response","id":M,"result":... | "error":...}
+
+ВАЖНО: каждый входящий "call" обрабатывается в отдельном треде.
+Иначе reader_loop, который единственный читает stdin, блокируется внутри
+handler'а, а handler может ждать ответа через proxy() — тот самый ответ
+приходит в stdin. Классический self-deadlock, из-за которого proxy()
+падает с "proxy timeout: <method>".
 """
 
 import json
@@ -31,7 +37,7 @@ def proxy(method_name: str, **params):
     """
     Вызвать привилегированный метод ОС. Apps НЕ имеют прямого доступа
     к Linux — все системные вызовы идут через этот мост и фильтруются
-    на стороне родителя (AppBridge.ALLOWED).
+    на стороне родителя (AppBridge.ALLOWED_PROXY).
     """
     global _proxy_next_id
     with _stdout_lock:
@@ -66,6 +72,11 @@ def _write(msg: dict):
         sys.stdout.flush()
 
 
+# ------------------------------------------------------------------
+# Reader loop — ЕДИНСТВЕННОЕ место, которое читает stdin.
+# Он не должен выполнять handler'ы синхронно: только раскладывать
+# входящие сообщения по тредам и выставлять events для proxy.
+# ------------------------------------------------------------------
 def _reader_loop():
     for line in sys.stdin:
         line = line.strip()
@@ -75,32 +86,40 @@ def _reader_loop():
             msg = json.loads(line)
         except json.JSONDecodeError:
             continue
-        _handle(msg)
+        _dispatch(msg)
 
 
-def _handle(msg: dict):
+def _dispatch(msg: dict):
     kind = msg.get("type")
 
     if kind == "call":
-        req_id = msg.get("id")
-        handler = _handlers.get(msg.get("method"))
-        if not handler:
-            _write({"type": "response", "id": req_id,
-                    "result": {"ok": False,
-                               "error": f"unknown method: {msg.get('method')}"}})
-            return
-        try:
-            params = msg.get("params") or {}
-            result = handler(**params) if isinstance(params, dict) else handler(*params)
-        except Exception as e:
-            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        _write({"type": "response", "id": req_id, "result": result})
+        # Не блокируем reader_loop handler'ом.
+        threading.Thread(
+            target=_run_call, args=(msg,), daemon=True,
+        ).start()
 
     elif kind == "proxy_response":
         fut = _proxy_pending.pop(msg.get("id"), None)
         if fut:
             fut["result"] = msg
             fut["event"].set()
+
+
+def _run_call(msg: dict):
+    req_id = msg.get("id")
+    handler = _handlers.get(msg.get("method"))
+    if not handler:
+        _write({"type": "response", "id": req_id,
+                "result": {"ok": False,
+                           "error": f"unknown method: {msg.get('method')}"}})
+        return
+    try:
+        params = msg.get("params") or {}
+        result = (handler(**params) if isinstance(params, dict)
+                  else handler(*params))
+    except Exception as e:
+        result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    _write({"type": "response", "id": req_id, "result": result})
 
 
 def run():

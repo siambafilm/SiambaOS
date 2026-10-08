@@ -858,6 +858,17 @@ class AppBridge:
 
     def attach_window(self, window) -> None:
         self._window = window
+        # Alt+F4, клик по системному крестику и т.п. → GTK delete-event
+        # → pywebview events.closing. Возвращаем False — отменяем закрытие.
+        # Программный window.destroy() (кнопка закрытия в titlebar)
+        # через это событие не проходит, поэтому UI-кнопка работает как обычно.
+        try:
+            window.events.closing += self._block_wm_close
+        except Exception as e:
+            _log(f"closing handler not attached: {e}")
+
+    def _block_wm_close(self):
+        return False
 
     def start_backend(self) -> None:
         backend = self.app_dir / "app_backend.py"
@@ -1216,6 +1227,14 @@ def main() -> int:
         frameless=True,
     )
     api.set_main_window(window)
+    
+    def _block_main_close():
+        return False
+
+    try:
+        window.events.closing += _block_main_close
+    except Exception as e:
+        _log(f"main closing handler not attached: {e}")
 
     webview.start(debug=DEVTOOLS)
     return 0

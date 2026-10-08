@@ -303,6 +303,11 @@
     item.dataset.running = state.running.has(bin) ? 'true' : 'false';
     item.title = displayNameFor(bin);
 
+        // Закреплённые иконки можно перетаскивать. Временные (running-only) — нет.
+    if (state.dock.includes(bin)) {
+      item.setAttribute('draggable', 'true');
+    }
+
     const iconData = buildDockIconContent(bin);
     const icon = document.createElement('div');
     icon.className = 'dock-icon';
@@ -438,35 +443,47 @@
     showToast(`«${displayNameFor(bin)}» убрано из дока`);
   }
 
-  /* ================================================================
+    /* ================================================================
      8. Magnification
+     Все иконки получают масштаб по гауссову распределению в зависимости
+     от расстояния до курсора. Эффект «лупы» плавно спадает на несколько
+     иконок в обе стороны, а не только на соседние.
+
+     Калибровка по старому коду:
+       SCALE_CENTER (1.35) → f=1 при dx=0
+       SCALE_NEIGHBOR (1.15) → f≈0.43 при dx=62 (одна иконка, 56+6px)
+     Отсюда MAX_SCALE = 1.35, σ ≈ 55px.
      ================================================================ */
-  const SCALE_CENTER = 1.35;
-  const SCALE_NEIGHBOR = 1.15;
+  const MAX_SCALE     = 1.35;   // масштаб иконки точно под курсором
+  const FALLOFF_SIGMA = 55;     // px; ≈ ширина одной иконки дока
 
   function updateDock(clientX) {
     if (!dockIcons.length) return;
+    if (dragBin) return; // во время drag-n-drop magnification выключен
+
     const allItems = Array.from(el.dock.querySelectorAll('.dock-item'));
     if (!allItems.length) return;
 
     const dockRect = el.dock.getBoundingClientRect();
-    const mouseX = clientX - dockRect.left;
+    const mouseX   = clientX - dockRect.left;
+    const sigma2   = FALLOFF_SIGMA * FALLOFF_SIGMA;
 
-    let nearest = -1, minDist = Infinity;
-    for (let i = 0; i < allItems.length; i++) {
-      const center = allItems[i].offsetLeft + allItems[i].offsetWidth / 2;
-      const d = Math.abs(mouseX - center);
-      if (d < minDist) { minDist = d; nearest = i; }
-    }
+    allItems.forEach(item => {
+      const center = item.offsetLeft + item.offsetWidth / 2;
+      const dx     = mouseX - center;
 
-    const icons = allItems.map(it => it.querySelector('.dock-icon'));
-    for (let i = 0; i < icons.length; i++) {
-      const dist = Math.abs(i - nearest);
-      const scale = dist === 0 ? SCALE_CENTER
-                  : dist === 1 ? SCALE_NEIGHBOR : 1;
-      icons[i].style.transform = `scale(${scale})`;
-      allItems[i].style.zIndex = String(100 - dist);
-    }
+      // Гауссово затухание: 1 в точке курсора, →0 при удалении.
+      //   dx = 0   → scale = 1.35  (под курсором)
+      //   dx = 62  → scale ≈ 1.19  (соседняя иконка)
+      //   dx = 124 → scale ≈ 1.03  (через одну)
+      //   dx = 186 → scale ≈ 1.00  (через две, почти незаметно)
+      const f     = Math.exp(-(dx * dx) / (2 * sigma2));
+      const scale = 1 + (MAX_SCALE - 1) * f;
+
+      const icon = item.querySelector('.dock-icon');
+      if (icon) icon.style.transform = `scale(${scale.toFixed(3)})`;
+      item.style.zIndex = String(Math.round(f * 100) + 1);
+    });
   }
 
   function resetDock() {
@@ -476,6 +493,132 @@
       it.style.zIndex = '1';
     });
   }
+
+  /* ================================================================
+     8.5. Drag & drop в доке
+     Таскать можно только закреплённые иконки (state.dock).
+     Временные (running-only) и Launchpad — не таскаются, но Launchpad
+     является валидной целью дропа (кладёт иконку в конец).
+     ================================================================ */
+  let dragBin = null;
+
+  function clearDropIndicators() {
+    el.dock
+      .querySelectorAll('.dock-item.drop-left, .dock-item.drop-right')
+      .forEach(x => x.classList.remove('drop-left', 'drop-right'));
+  }
+
+  function cleanupDockDrag() {
+    dragBin = null;
+    el.dock.classList.remove('dock-dragging');
+    el.dock.querySelectorAll('.dock-item.dragging')
+      .forEach(x => x.classList.remove('dragging'));
+    clearDropIndicators();
+  }
+
+  // Ближайший .dock-item к точке clientX и с какой стороны от его центра
+  // находится курсор. Работает и в «щели» между иконками.
+  function getDropTargetFromPoint(clientX) {
+    const items = Array.from(el.dock.querySelectorAll('.dock-item'));
+    if (!items.length) return null;
+
+    let best = null, bestDist = Infinity, bestSide = 'right';
+    for (const it of items) {
+      const r  = it.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const d  = Math.abs(clientX - cx);
+      if (d < bestDist) {
+        bestDist = d;
+        best     = it;
+        bestSide = clientX < cx ? 'left' : 'right';
+      }
+    }
+    return best ? { item: best, side: bestSide } : null;
+  }
+
+  // Возвращает НОВЫЙ массив закреплённых bin с учётом перетаскивания.
+  //   srcBin — что тащим
+  //   dstBin — на что бросили (null = Launchpad или пустое место)
+  //   side   — 'left' | 'right' относительно центра dstBin
+  function reorderDock(list, srcBin, dstBin, side) {
+    const out = list.filter(x => x !== srcBin);
+
+    if (!dstBin) {
+      out.push(srcBin);              // бросили на Launchpad — в конец
+      return out;
+    }
+
+    const i = out.indexOf(dstBin);
+    if (i === -1) {
+      out.push(srcBin);              // dstBin не закреплён — в конец
+      return out;
+    }
+    out.splice(side === 'left' ? i : i + 1, 0, srcBin);
+    return out;
+  }
+
+  el.dock.addEventListener('dragstart', (e) => {
+    const item = e.target.closest('.dock-item');
+    if (!item || !item.dataset.app) return;
+
+    const bin = item.dataset.app;
+    if (!state.dock.includes(bin)) {
+      // таскать можно только закреплённые
+      e.preventDefault();
+      return;
+    }
+
+    dragBin = bin;
+    item.classList.add('dragging');
+    el.dock.classList.add('dock-dragging');
+
+    try {
+      e.dataTransfer.setData('text/plain', bin);
+      e.dataTransfer.effectAllowed = 'move';
+    } catch (_) { /* старые WebKit */ }
+
+    // Гасим magnification, чтобы scale() не мешал позиционированию.
+    resetDock();
+  });
+
+  el.dock.addEventListener('dragover', (e) => {
+    if (!dragBin) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+
+    clearDropIndicators();
+
+    const tgt = getDropTargetFromPoint(e.clientX);
+    if (!tgt) return;
+
+    // над самим собой индикатор не нужен
+    if (tgt.item.dataset.app === dragBin) return;
+
+    tgt.item.classList.add(tgt.side === 'left' ? 'drop-left' : 'drop-right');
+  });
+
+  el.dock.addEventListener('drop', async (e) => {
+    if (!dragBin) return;
+    e.preventDefault();
+
+    const tgt = getDropTargetFromPoint(e.clientX);
+    const targetBin = tgt ? (tgt.item.dataset.app || null) : null;
+    const side      = tgt ? tgt.side : 'right';
+
+    const newDock = reorderDock(state.dock, dragBin, targetBin, side);
+    cleanupDockDrag();
+
+    // если порядок не изменился — не трогаем бэкенд
+    if (newDock.length === state.dock.length
+        && newDock.every((x, i) => x === state.dock[i])) {
+      return;
+    }
+    await saveDock(newDock);
+  });
+
+  el.dock.addEventListener('dragend', () => {
+    cleanupDockDrag();
+  });
 
   /* ================================================================
      9. Запуск / фокус

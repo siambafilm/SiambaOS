@@ -1,12 +1,12 @@
 [
+  "firefox",
   "xed",
   "gnome-terminal",
-  "firefox",
   "thunderbird",
   "rhythmbox",
   "eog",
   "gnome-calendar",
   "nautilus",
-  "siamba:notes_app",
-  "siamba:settings_app"
+  "siamba:settings_app",
+  "siamba:notes_app"
 ]
